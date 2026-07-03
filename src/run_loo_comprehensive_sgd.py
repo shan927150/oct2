@@ -5,6 +5,12 @@ Comprehensive LOO / Leave-K-Out validation for SGD-trained attack models.
 Important:
   The ground-truth retraining in this script also uses SGD. This keeps the
   validation dynamics matched to the SGD TracIn scores.
+
+  [FIX] Per-class train/test data are now loaded from the SAME scores_class{c}.npz
+  that the TracIn scores come from (it already stores train_x/train_y/test_x/test_y).
+  This guarantees the score axis and the LOO-removal axis are identical, removing the
+  attack_data / scores mismatch risk. --attack_data_path is kept for CLI compat but
+  is no longer used.
 """
 import argparse
 import json
@@ -101,7 +107,8 @@ def select_stratified_points(mean_scores, n_points=50):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--attack_data_path", type=str, default="./results/oct_mia_tracin/tracin/attack_data.npz")
+    parser.add_argument("--attack_data_path", type=str, default="./results/oct_mia_tracin/tracin/attack_data.npz",
+                        help="[deprecated] no longer used; data is read from scores_class{c}.npz")
     parser.add_argument("--scores_dir", type=str, default="./results/oct_mia_tracin_sgd/tracin")
     parser.add_argument("--output_dir", type=str, default="./results/oct_loo_full_sgd")
     parser.add_argument("--classes", type=int, nargs="*", default=[0, 1, 2, 3])
@@ -122,9 +129,7 @@ def main():
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    ad = np.load(args.attack_data_path)
-    attack_train_x, attack_train_y, train_classes = ad["attack_train_x"], ad["attack_train_y"], ad["train_classes"]
-    attack_test_x, attack_test_y, test_classes = ad["attack_test_x"], ad["attack_test_y"], ad["test_classes"]
+    # [FIX] data now loaded per-class from scores_class{c}.npz inside the loop (see below).
     seeds = [args.base_seed + s for s in range(args.n_seeds)]
     all_class_results = {}
 
@@ -133,16 +138,21 @@ def main():
     for c in args.classes:
         t0 = time.time()
         logger.info(f"\n{'='*70}\n  CLASS {c} ({CLASS_NAMES.get(c, c)})\n{'='*70}")
-        tr_mask, te_mask = train_classes == c, test_classes == c
-        c_tr_x, c_tr_y = attack_train_x[tr_mask], attack_train_y[tr_mask]
-        c_te_x, c_te_y = attack_test_x[te_mask], attack_test_y[te_mask]
+
+        # [FIX] load scores AND the exact train/test arrays the scores were computed on,
+        # from the same npz. Guarantees the TracIn score axis == the LOO removal axis.
+        score_path = Path(args.scores_dir) / f"scores_class{c}.npz"
+        sp = np.load(score_path, allow_pickle=True)
+        scores = sp["scores"]
+        c_tr_x, c_tr_y = np.asarray(sp["train_x"], np.float32), np.asarray(sp["train_y"], int)
+        c_te_x, c_te_y = np.asarray(sp["test_x"], np.float32), np.asarray(sp["test_y"], int)
+        assert scores.shape == (len(c_te_x), len(c_tr_x)), (
+            f"class {c}: scores shape {scores.shape} != {(len(c_te_x), len(c_tr_x))}")
         n_in, n_train = c_tr_x.shape[1], len(c_tr_x)
 
         member_test_idx = np.where(c_te_y == 1)[0][:args.n_test_points]
         test_x_eval, test_y_eval = c_te_x[member_test_idx], c_te_y[member_test_idx]
 
-        score_path = Path(args.scores_dir) / f"scores_class{c}.npz"
-        scores = np.load(score_path)["scores"]
         mean_scores = scores[member_test_idx].mean(axis=0)
 
         selected = select_stratified_points(mean_scores, args.n_loo_points)
