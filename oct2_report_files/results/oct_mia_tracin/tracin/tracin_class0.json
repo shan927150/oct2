@@ -1,0 +1,15 @@
+{
+  "class": 0,
+  "class_name": "CNV",
+  "n_train": 8870,
+  "n_test": 1918,
+  "attack_acc": 0.5922836287799792,
+  "attack_prec": 0.5794621026894865,
+  "attack_rec": 0.9097888675623801,
+  "self_influence_member_mean": 45.81920741681676,
+  "self_influence_nonmember_mean": 64.98179542848594,
+  "member_influence": {
+    "0": 49.86030578613281,
+    "1": 48.639427185058594
+  }
+}

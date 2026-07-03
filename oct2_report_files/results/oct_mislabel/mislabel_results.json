@@ -1,0 +1,46 @@
+{
+  "0": {
+    "class": 0,
+    "class_name": "CNV",
+    "n_total": 8870,
+    "n_flipped": 887,
+    "flip_ratio": 0.1,
+    "recovery_at_10pct": 0.2773393461104848,
+    "recovery_at_20pct": 0.43404735062006766,
+    "self_inf_flipped_mean": 60.514271999032076,
+    "self_inf_clean_mean": 43.37492753459101
+  },
+  "1": {
+    "class": 1,
+    "class_name": "DME",
+    "n_total": 3472,
+    "n_flipped": 347,
+    "flip_ratio": 0.1,
+    "recovery_at_10pct": 0.4207492795389049,
+    "recovery_at_20pct": 0.8097982708933718,
+    "self_inf_flipped_mean": 96.46058755971342,
+    "self_inf_clean_mean": 22.351450852651595
+  },
+  "2": {
+    "class": 2,
+    "class_name": "DRUSEN",
+    "n_total": 2229,
+    "n_flipped": 222,
+    "flip_ratio": 0.1,
+    "recovery_at_10pct": 0.5900900900900901,
+    "recovery_at_20pct": 0.8513513513513513,
+    "self_inf_flipped_mean": 77.47065198173125,
+    "self_inf_clean_mean": 13.125614919382791
+  },
+  "3": {
+    "class": 3,
+    "class_name": "NORMAL",
+    "n_total": 7077,
+    "n_flipped": 707,
+    "flip_ratio": 0.1,
+    "recovery_at_10pct": 0.22206506364922207,
+    "recovery_at_20pct": 0.3465346534653465,
+    "self_inf_flipped_mean": 18.51800970924963,
+    "self_inf_clean_mean": 10.077340531654457
+  }
+}

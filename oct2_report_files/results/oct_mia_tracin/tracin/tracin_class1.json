@@ -1,0 +1,15 @@
+{
+  "class": 1,
+  "class_name": "DME",
+  "n_train": 3472,
+  "n_test": 617,
+  "attack_acc": 0.8444084278768234,
+  "attack_prec": 0.7757255936675461,
+  "attack_rec": 0.9639344262295082,
+  "self_influence_member_mean": 12.635900619803365,
+  "self_influence_nonmember_mean": 51.537056231554054,
+  "member_influence": {
+    "0": 13.779382705688477,
+    "1": 10.996678352355957
+  }
+}

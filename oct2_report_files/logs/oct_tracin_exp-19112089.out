@@ -1,0 +1,22 @@
+=== TracIn Validation Experiments ===
+Job: 19112089 | Node: gpub044.delta.ncsa.illinois.edu | Fri Jun 12 04:10:32 CDT 2026 | REGEN_SCORES=1
+======================================
+
+>>> Step 0: Regenerating checkpoints + scores (attack_l2=0)
+
+>>> Experiment 1: Mislabel Detection (Recovery@10%)
+
+======================================================================
+  Class           N  Flipped   Recovery@10%   Recovery@20%  SI Flip/Clean
+  CNV          8870      887         0.277         0.434           1.4×
+  DME          3472      347         0.421         0.810           4.3×
+  DRUSEN       2229      222         0.590         0.851           5.9×
+  NORMAL       7077      707         0.222         0.347           1.8×
+======================================================================
+
+>>> Experiment 2: Leave-One-Out Validation (Class 1 = DME)
+
+=== All experiments done. Fri Jun 12 04:25:16 CDT 2026 ===
+Outputs:
+  Mislabel: ./results/oct_mislabel/
+  LOO:      ./results/oct_loo/

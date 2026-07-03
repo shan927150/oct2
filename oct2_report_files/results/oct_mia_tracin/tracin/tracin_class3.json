@@ -1,0 +1,15 @@
+{
+  "class": 3,
+  "class_name": "NORMAL",
+  "n_train": 7077,
+  "n_test": 1390,
+  "attack_acc": 0.5654676258992806,
+  "attack_prec": 0.54182156133829,
+  "attack_rec": 0.840057636887608,
+  "self_influence_member_mean": 11.353558757650049,
+  "self_influence_nonmember_mean": 11.63696664197307,
+  "member_influence": {
+    "0": 9.64087963104248,
+    "1": 9.93065071105957
+  }
+}

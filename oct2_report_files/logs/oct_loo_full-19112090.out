@@ -1,0 +1,32 @@
+=== Comprehensive LOO Validation ===
+Job: 19112090 | Node: gpub044.delta.ncsa.illinois.edu | Fri Jun 12 04:25:25 CDT 2026 | REGEN_SCORES=0
+>>> Step 0 skipped (REGEN_SCORES=0); using existing scores in ./results/oct_mia_tracin/tracin/
+
+>>> Comprehensive Leave-One-Out / Leave-K-Out
+
+======================================================================
+  COMPREHENSIVE LOO — ALL CLASSES
+======================================================================
+  Class        Spearman r        p    Pearson r        p
+  CNV             +0.2642   0.0637      +0.1316   0.3625
+  DME             +0.0551   0.7041      -0.0043   0.9762
+  DRUSEN          +0.1262   0.3823      +0.2581   0.0703
+  NORMAL          +0.0412   0.7762      +0.0800   0.5806
+
+>>> Outlier removal plots (IQR + extreme TracIn cluster)
+
+==============================================================================
+  OUTLIER REMOVAL — Spearman r (original → IQR → drop-cluster)
+==============================================================================
+  Class            orig        IQR    cluster   (p-values in JSON)
+  CNV            +0.264     +0.264     +0.420
+  DME            +0.055     +0.145     +0.133
+  DRUSEN         +0.126     +0.126     -0.034
+  NORMAL         +0.041     +0.041     +0.020
+==============================================================================
+  Outputs in ./results/oct_loo_outlier
+
+=== Done. Fri Jun 12 05:18:00 CDT 2026 ===
+Outputs:
+  LOO full:     ./results/oct_loo_full/
+  Outlier plots:./results/oct_loo_outlier/

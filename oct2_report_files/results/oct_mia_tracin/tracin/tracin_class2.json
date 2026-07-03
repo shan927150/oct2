@@ -1,0 +1,15 @@
+{
+  "class": 2,
+  "class_name": "DRUSEN",
+  "n_train": 2229,
+  "n_test": 445,
+  "attack_acc": 0.7685393258426966,
+  "attack_prec": 0.7071651090342679,
+  "attack_rec": 0.961864406779661,
+  "self_influence_member_mean": 12.343052730360563,
+  "self_influence_nonmember_mean": 27.304391596974376,
+  "member_influence": {
+    "0": 9.500627517700195,
+    "1": 8.208375930786133
+  }
+}

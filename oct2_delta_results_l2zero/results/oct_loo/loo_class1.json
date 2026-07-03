@@ -1,0 +1,83 @@
+{
+  "class": 1,
+  "class_name": "DME",
+  "n_train": 3472,
+  "n_test_points": 20,
+  "baseline_loss": 0.1348990947008133,
+  "spearman_r": 0.31139957766460913,
+  "spearman_p": 0.38111344254489044,
+  "pearson_r": 0.34480977956075676,
+  "pearson_p": 0.3291905756579521,
+  "samples": [
+    {
+      "train_idx": 288,
+      "type": "proponent",
+      "membership": 1,
+      "tracin_score": 21.2336368560791,
+      "delta_loss": 0.03751511871814728
+    },
+    {
+      "train_idx": 3069,
+      "type": "proponent",
+      "membership": 1,
+      "tracin_score": 21.20108985900879,
+      "delta_loss": 0.09414483606815338
+    },
+    {
+      "train_idx": 2990,
+      "type": "proponent",
+      "membership": 1,
+      "tracin_score": 20.78585433959961,
+      "delta_loss": 0.08587177097797394
+    },
+    {
+      "train_idx": 2852,
+      "type": "proponent",
+      "membership": 1,
+      "tracin_score": 20.78585433959961,
+      "delta_loss": 0.08607210218906403
+    },
+    {
+      "train_idx": 2967,
+      "type": "proponent",
+      "membership": 1,
+      "tracin_score": 20.706829071044922,
+      "delta_loss": 0.09016633033752441
+    },
+    {
+      "train_idx": 1092,
+      "type": "opponent",
+      "membership": 0,
+      "tracin_score": -45.24877166748047,
+      "delta_loss": 0.06765700876712799
+    },
+    {
+      "train_idx": 1226,
+      "type": "opponent",
+      "membership": 0,
+      "tracin_score": -45.24877166748047,
+      "delta_loss": 0.07227297127246857
+    },
+    {
+      "train_idx": 617,
+      "type": "opponent",
+      "membership": 0,
+      "tracin_score": -45.24877166748047,
+      "delta_loss": 0.042455852031707764
+    },
+    {
+      "train_idx": 1122,
+      "type": "opponent",
+      "membership": 0,
+      "tracin_score": -45.24877166748047,
+      "delta_loss": 0.07248330116271973
+    },
+    {
+      "train_idx": 1352,
+      "type": "opponent",
+      "membership": 0,
+      "tracin_score": -45.24877166748047,
+      "delta_loss": 0.07582546770572662
+    }
+  ]
+}

@@ -1,0 +1,224 @@
+Running "module reset". Resetting modules to system default. The following $MODULEPATH directories have been removed: /sw/rh9.4/spack/default/modules/lmod/linux-rhel9-x86_64/Core
+=====================================================
+Conda-Forge PyTorch 2.8 Environment Loaded Successfully!
+=====================================================
+
+To activate the environment:
+  conda activate base
+
+If 'conda activate' fails, use:
+  source $CONDA_PREFIX/etc/profile.d/conda.sh && conda activate base
+
+To verify PyTorch installation:
+  python -c "import torch; print(f'PyTorch {torch.__version__} CUDA:
+{torch.cuda.is_available()}')"
+
+Environment includes:
+  - PyTorch 2.8 with CUDA 12.8 support
+  - Scientific Python stack (numpy, scipy, pandas)
+  - ML libraries (transformers, lightning, timm)
+  - Cray PE integration with optimized MPI
+
+For Jupyter notebook support:
+  setup-kernel (creates Jupyter kernel for this environment)
+
+For distributed training, load:
+  module load aws-ofi-nccl/1.14.2
+
+Ready for single-node and distributed training!
+=====================================================
+
+04:10:43 [INFO] OCT scan: 84484 images, 5718 patients (metadata only)
+04:10:43 [INFO] Subsampled to 39295 images (patient-level)
+04:10:56 [INFO]   loaded 3929/39295
+04:11:08 [INFO]   loaded 7858/39295
+04:11:21 [INFO]   loaded 11787/39295
+04:11:33 [INFO]   loaded 15716/39295
+04:11:50 [INFO]   loaded 19645/39295
+04:12:02 [INFO]   loaded 23574/39295
+04:12:14 [INFO]   loaded 27503/39295
+04:12:26 [INFO]   loaded 31432/39295
+04:12:38 [INFO]   loaded 35361/39295
+04:12:50 [INFO]   loaded 39290/39295
+04:12:52 [INFO] Loaded OCT: X=(39295, 1, 128, 128), classes=4, patients=2866, mean=0.1924, std=0.2169
+04:12:52 [INFO]   CNV: 15912 images, 393 patients
+04:12:52 [INFO]   DME: 5785 images, 408 patients
+04:12:52 [INFO]   DRUSEN: 3963 images, 340 patients
+04:12:52 [INFO]   NORMAL: 13635 images, 1725 patients
+04:12:52 [INFO] Using GROUP-AWARE (patient-level) split
+04:12:52 [INFO]   target_train class dist: {0: 1042, 1: 305, 2: 236, 3: 694}
+04:12:52 [INFO]   target_test class dist: {0: 876, 1: 312, 2: 209, 3: 696}
+04:12:52 [INFO] [GroupSplit] target_train=2277img/162pat, target_test=2093img/155pat, shadow_pool=2549pat
+04:12:52 [INFO]   Shadow-0: train=2126, test=2121
+04:12:52 [INFO]   Shadow-1: train=2413, test=2039
+04:12:52 [INFO]   Shadow-2: train=2154, test=2081
+04:12:52 [INFO]   Shadow-3: train=2058, test=2013
+04:12:52 [INFO]   Shadow-4: train=2359, test=2284
+04:12:52 [INFO] Splits saved to results/oct_mia_tracin/splits/oct_seed42_n40000_target2000_shadowN5_shadowSize2000_grp.json
+04:12:52 [INFO] Target split: train=2277, test=2093, shadows=5
+04:13:07 [INFO] [Target] epoch=10/50, loss=14.6242
+04:13:17 [INFO] [Target] epoch=20/50, loss=6.7985
+04:13:26 [INFO] [Target] epoch=30/50, loss=2.5232
+04:13:36 [INFO] [Target] epoch=40/50, loss=1.3673
+04:13:45 [INFO] [Target] epoch=50/50, loss=0.8260
+04:13:46 [INFO] [Target] train_acc=0.9956, test_acc=0.7946, gap=0.2011
+04:13:46 [INFO] Target: train_acc=0.9956, test_acc=0.7946
+04:13:46 [INFO] Shadow 1/5
+04:14:32 [INFO] [Shadow-0] train_acc=0.9953, test_acc=0.7195, gap=0.2758
+04:14:32 [INFO] Shadow 2/5
+04:15:24 [INFO] [Shadow-1] train_acc=0.9996, test_acc=0.6969, gap=0.3027
+04:15:24 [INFO] Shadow 3/5
+04:16:10 [INFO] [Shadow-2] train_acc=0.9991, test_acc=0.7275, gap=0.2715
+04:16:11 [INFO] Shadow 4/5
+04:16:55 [INFO] [Shadow-3] train_acc=0.9990, test_acc=0.6980, gap=0.3011
+04:16:55 [INFO] Shadow 5/5
+04:17:46 [INFO] [Shadow-4] train_acc=0.9695, test_acc=0.7680, gap=0.2015
+04:17:46 [INFO] Attack data saved → results/oct_mia_tracin/tracin/attack_data.npz
+04:17:46 [INFO] Attack train=(21648, 4), test=(4370, 4), n_classes=4
+04:17:46 [INFO] 
+============================================================
+  TASK CLASS 0 (CNV)
+============================================================
+04:17:51 [INFO] [Attack-c0] trained 50 epochs, 10 checkpoints
+04:17:51 [INFO]   Attack: acc=0.5923, prec=0.5795, rec=0.9098
+04:18:40 [INFO]   Self-inf member mean=45.819207, non-member mean=64.981795
+04:18:46 [INFO]   ckpt 1/10 (epoch 5): range=[-17.229862, 46.484879]
+04:18:52 [INFO]   ckpt 2/10 (epoch 10): range=[-9.823558, 48.655933]
+04:18:58 [INFO]   ckpt 3/10 (epoch 15): range=[-7.762369, 52.889679]
+04:19:04 [INFO]   ckpt 4/10 (epoch 20): range=[-7.658108, 62.029190]
+04:19:10 [INFO]   ckpt 5/10 (epoch 25): range=[-9.851961, 68.644363]
+04:19:16 [INFO]   ckpt 6/10 (epoch 30): range=[-10.333129, 80.179855]
+04:19:22 [INFO]   ckpt 7/10 (epoch 35): range=[-10.484611, 96.855949]
+04:19:28 [INFO]   ckpt 8/10 (epoch 40): range=[-13.547466, 93.648003]
+04:19:34 [INFO]   ckpt 9/10 (epoch 45): range=[-13.331609, 97.811928]
+04:19:40 [INFO]   ckpt 10/10 (epoch 50): range=[-14.243855, 103.241577]
+04:19:40 [INFO] TracInCP done in 60.2s
+04:19:40 [INFO]   |inf| by membership: {'0': 49.86030578613281, '1': 48.639427185058594}
+04:19:40 [INFO]   |inf| by shadow ID: {'0': 46.493431091308594, '1': 45.56529235839844, '2': 51.183616638183594, '3': 46.663124084472656, '4': 55.56367874145508}
+04:19:40 [INFO]   test#0: proponents entropy=0.0509, opponents entropy=0.0000
+04:19:44 [INFO]   Results saved → results/oct_mia_tracin/tracin
+04:19:44 [INFO] 
+============================================================
+  TASK CLASS 1 (DME)
+============================================================
+04:19:46 [INFO] [Attack-c1] trained 50 epochs, 10 checkpoints
+04:19:46 [INFO]   Attack: acc=0.8444, prec=0.7757, rec=0.9639
+04:20:05 [INFO]   Self-inf member mean=12.635901, non-member mean=51.537056
+04:20:07 [INFO]   ckpt 1/10 (epoch 5): range=[-15.146865, 22.444118]
+04:20:10 [INFO]   ckpt 2/10 (epoch 10): range=[-11.748621, 20.956070]
+04:20:12 [INFO]   ckpt 3/10 (epoch 15): range=[-11.067807, 19.987350]
+04:20:14 [INFO]   ckpt 4/10 (epoch 20): range=[-10.791670, 19.885130]
+04:20:16 [INFO]   ckpt 5/10 (epoch 25): range=[-13.271469, 21.889641]
+04:20:19 [INFO]   ckpt 6/10 (epoch 30): range=[-11.245806, 25.510351]
+04:20:21 [INFO]   ckpt 7/10 (epoch 35): range=[-13.608074, 29.726315]
+04:20:23 [INFO]   ckpt 8/10 (epoch 40): range=[-15.254631, 33.718735]
+04:20:25 [INFO]   ckpt 9/10 (epoch 45): range=[-12.852111, 39.578171]
+04:20:28 [INFO]   ckpt 10/10 (epoch 50): range=[-14.344473, 36.402870]
+04:20:28 [INFO] TracInCP done in 22.7s
+04:20:28 [INFO]   |inf| by membership: {'0': 13.779382705688477, '1': 10.996678352355957}
+04:20:28 [INFO]   |inf| by shadow ID: {'0': 15.813109397888184, '1': 12.815308570861816, '2': 9.743865013122559, '3': 12.056662559509277, '4': 11.034881591796875}
+04:20:28 [INFO]   test#0: proponents entropy=0.2680, opponents entropy=0.0000
+04:20:28 [INFO]   Results saved → results/oct_mia_tracin/tracin
+04:20:28 [INFO] 
+============================================================
+  TASK CLASS 2 (DRUSEN)
+============================================================
+04:20:29 [INFO] [Attack-c2] trained 50 epochs, 10 checkpoints
+04:20:29 [INFO]   Attack: acc=0.7685, prec=0.7072, rec=0.9619
+04:20:42 [INFO]   Self-inf member mean=12.343053, non-member mean=27.304392
+04:20:43 [INFO]   ckpt 1/10 (epoch 5): range=[-12.713490, 19.950212]
+04:20:45 [INFO]   ckpt 2/10 (epoch 10): range=[-11.022198, 18.932215]
+04:20:46 [INFO]   ckpt 3/10 (epoch 15): range=[-10.415033, 18.386715]
+04:20:48 [INFO]   ckpt 4/10 (epoch 20): range=[-9.149121, 16.420553]
+04:20:49 [INFO]   ckpt 5/10 (epoch 25): range=[-8.597793, 16.347048]
+04:20:51 [INFO]   ckpt 6/10 (epoch 30): range=[-8.028347, 14.957840]
+04:20:52 [INFO]   ckpt 7/10 (epoch 35): range=[-8.154899, 12.971854]
+04:20:54 [INFO]   ckpt 8/10 (epoch 40): range=[-8.180084, 12.651501]
+04:20:55 [INFO]   ckpt 9/10 (epoch 45): range=[-6.936346, 12.750545]
+04:20:57 [INFO]   ckpt 10/10 (epoch 50): range=[-8.477121, 12.554090]
+04:20:57 [INFO] TracInCP done in 14.9s
+04:20:57 [INFO]   |inf| by membership: {'0': 9.500627517700195, '1': 8.208375930786133}
+04:20:57 [INFO]   |inf| by shadow ID: {'0': 8.282184600830078, '1': 12.018597602844238, '2': 7.989197731018066, '3': 7.430397987365723, '4': 8.073732376098633}
+04:20:57 [INFO]   test#0: proponents entropy=0.7042, opponents entropy=0.0057
+04:20:57 [INFO]   Results saved → results/oct_mia_tracin/tracin
+04:20:57 [INFO] 
+============================================================
+  TASK CLASS 3 (NORMAL)
+============================================================
+04:21:00 [INFO] [Attack-c3] trained 50 epochs, 10 checkpoints
+04:21:00 [INFO]   Attack: acc=0.5655, prec=0.5418, rec=0.8401
+04:21:40 [INFO]   Self-inf member mean=11.353559, non-member mean=11.636967
+04:21:44 [INFO]   ckpt 1/10 (epoch 5): range=[-3.089292, 18.203661]
+04:21:49 [INFO]   ckpt 2/10 (epoch 10): range=[-3.329278, 10.717513]
+04:21:54 [INFO]   ckpt 3/10 (epoch 15): range=[-2.613288, 15.525105]
+04:21:58 [INFO]   ckpt 4/10 (epoch 20): range=[-6.367584, 12.188482]
+04:22:03 [INFO]   ckpt 5/10 (epoch 25): range=[-7.403404, 15.177576]
+04:22:08 [INFO]   ckpt 6/10 (epoch 30): range=[-11.035787, 13.712559]
+04:22:13 [INFO]   ckpt 7/10 (epoch 35): range=[-11.636949, 12.478670]
+04:22:17 [INFO]   ckpt 8/10 (epoch 40): range=[-3.679683, 12.412050]
+04:22:22 [INFO]   ckpt 9/10 (epoch 45): range=[-11.185303, 13.307394]
+04:22:27 [INFO]   ckpt 10/10 (epoch 50): range=[-14.248421, 14.574365]
+04:22:27 [INFO] TracInCP done in 47.2s
+04:22:27 [INFO]   |inf| by membership: {'0': 9.64087963104248, '1': 9.93065071105957}
+04:22:27 [INFO]   |inf| by shadow ID: {'0': 9.731922149658203, '1': 9.532504081726074, '2': 10.138107299804688, '3': 9.658404350280762, '4': 9.865460395812988}
+04:22:27 [INFO]   test#0: proponents entropy=0.7280, opponents entropy=0.0143
+04:22:29 [INFO]   Results saved → results/oct_mia_tracin/tracin
+04:22:29 [INFO] 
+Phase 2 TracIn complete. Outputs in results/oct_mia_tracin/tracin
+04:22:35 [INFO] Loaded attack data: train=(21648, 4)
+04:22:36 [INFO] 
+============================================================
+  CLASS 0 (CNV)
+============================================================
+04:22:36 [INFO]   Total=8870, Flipped=887 (10%)
+04:22:42 [INFO] [Mislabel-c0] trained 50 epochs, 10 checkpoints
+04:23:31 [INFO]   Recovery@10%=0.2773 (random=0.10), @20%=0.4340
+04:23:31 [INFO]   Self-inf flipped mean=60.5143, clean mean=43.3749
+04:23:31 [INFO] 
+============================================================
+  CLASS 1 (DME)
+============================================================
+04:23:31 [INFO]   Total=3472, Flipped=347 (10%)
+04:23:33 [INFO] [Mislabel-c1] trained 50 epochs, 10 checkpoints
+04:23:52 [INFO]   Recovery@10%=0.4207 (random=0.10), @20%=0.8098
+04:23:52 [INFO]   Self-inf flipped mean=96.4606, clean mean=22.3515
+04:23:53 [INFO] 
+============================================================
+  CLASS 2 (DRUSEN)
+============================================================
+04:23:53 [INFO]   Total=2229, Flipped=222 (10%)
+04:23:54 [INFO] [Mislabel-c2] trained 50 epochs, 10 checkpoints
+04:24:06 [INFO]   Recovery@10%=0.5901 (random=0.10), @20%=0.8514
+04:24:06 [INFO]   Self-inf flipped mean=77.4707, clean mean=13.1256
+04:24:06 [INFO] 
+============================================================
+  CLASS 3 (NORMAL)
+============================================================
+04:24:06 [INFO]   Total=7077, Flipped=707 (10%)
+04:24:10 [INFO] [Mislabel-c3] trained 50 epochs, 10 checkpoints
+04:24:49 [INFO]   Recovery@10%=0.2221 (random=0.10), @20%=0.3465
+04:24:49 [INFO]   Self-inf flipped mean=18.5180, clean mean=10.0773
+04:24:53 [INFO] Class 1 (DME): train=3472, test=617, scores=(617, 3472)
+04:24:57 [INFO] [Baseline] trained 50 epochs, 1 checkpoints
+04:24:57 [INFO] Baseline loss: 0.134899
+04:24:59 [INFO] [LOO-0] trained 50 epochs, 1 checkpoints
+04:24:59 [INFO]   remove idx=288 (proponent): Δloss=+0.037515, TracIn=+21.2336
+04:25:01 [INFO] [LOO-1] trained 50 epochs, 1 checkpoints
+04:25:01 [INFO]   remove idx=3069 (proponent): Δloss=+0.094145, TracIn=+21.2011
+04:25:02 [INFO] [LOO-2] trained 50 epochs, 1 checkpoints
+04:25:02 [INFO]   remove idx=2990 (proponent): Δloss=+0.085872, TracIn=+20.7859
+04:25:04 [INFO] [LOO-3] trained 50 epochs, 1 checkpoints
+04:25:04 [INFO]   remove idx=2852 (proponent): Δloss=+0.086072, TracIn=+20.7859
+04:25:06 [INFO] [LOO-4] trained 50 epochs, 1 checkpoints
+04:25:06 [INFO]   remove idx=2967 (proponent): Δloss=+0.090166, TracIn=+20.7068
+04:25:08 [INFO] [LOO-5] trained 50 epochs, 1 checkpoints
+04:25:08 [INFO]   remove idx=1092 (opponent): Δloss=+0.067657, TracIn=-45.2488
+04:25:10 [INFO] [LOO-6] trained 50 epochs, 1 checkpoints
+04:25:10 [INFO]   remove idx=1226 (opponent): Δloss=+0.072273, TracIn=-45.2488
+04:25:11 [INFO] [LOO-7] trained 50 epochs, 1 checkpoints
+04:25:11 [INFO]   remove idx=617 (opponent): Δloss=+0.042456, TracIn=-45.2488
+04:25:13 [INFO] [LOO-8] trained 50 epochs, 1 checkpoints
+04:25:13 [INFO]   remove idx=1122 (opponent): Δloss=+0.072483, TracIn=-45.2488
+04:25:15 [INFO] [LOO-9] trained 50 epochs, 1 checkpoints
+04:25:15 [INFO]   remove idx=1352 (opponent): Δloss=+0.075825, TracIn=-45.2488
+04:25:15 [INFO] Spearman r=0.3114 (p=0.3811), Pearson r=0.3448 (p=0.3292)

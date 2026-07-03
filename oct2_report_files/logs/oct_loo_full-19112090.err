@@ -1,0 +1,1274 @@
+Running "module reset". Resetting modules to system default. The following $MODULEPATH directories have been removed: /sw/rh9.4/spack/default/modules/lmod/linux-rhel9-x86_64/Core
+=====================================================
+Conda-Forge PyTorch 2.8 Environment Loaded Successfully!
+=====================================================
+
+To activate the environment:
+  conda activate base
+
+If 'conda activate' fails, use:
+  source $CONDA_PREFIX/etc/profile.d/conda.sh && conda activate base
+
+To verify PyTorch installation:
+  python -c "import torch; print(f'PyTorch {torch.__version__} CUDA:
+{torch.cuda.is_available()}')"
+
+Environment includes:
+  - PyTorch 2.8 with CUDA 12.8 support
+  - Scientific Python stack (numpy, scipy, pandas)
+  - ML libraries (transformers, lightning, timm)
+  - Cray PE integration with optimized MPI
+
+For Jupyter notebook support:
+  setup-kernel (creates Jupyter kernel for this environment)
+
+For distributed training, load:
+  module load aws-ofi-nccl/1.14.2
+
+Ready for single-node and distributed training!
+=====================================================
+
+04:25:27 [INFO] 
+======================================================================
+  CLASS 0 (CNV)
+======================================================================
+04:25:28 [INFO]   --- Part A: Single-point LOO (50 pts × 5 seeds) ---
+04:25:34 [INFO] [BL-c0-s42] trained 50 epochs, 1 checkpoints
+04:25:38 [INFO] [BL-c0-s43] trained 50 epochs, 1 checkpoints
+04:25:43 [INFO] [BL-c0-s44] trained 50 epochs, 1 checkpoints
+04:25:47 [INFO] [BL-c0-s45] trained 50 epochs, 1 checkpoints
+04:25:52 [INFO] [BL-c0-s46] trained 50 epochs, 1 checkpoints
+04:25:52 [INFO]   Baseline loss: 0.595694 ± 0.052274
+04:25:57 [INFO] [LOO-c0-0] trained 50 epochs, 1 checkpoints
+04:26:01 [INFO] [LOO-c0-0] trained 50 epochs, 1 checkpoints
+04:26:06 [INFO] [LOO-c0-0] trained 50 epochs, 1 checkpoints
+04:26:10 [INFO] [LOO-c0-0] trained 50 epochs, 1 checkpoints
+04:26:15 [INFO] [LOO-c0-0] trained 50 epochs, 1 checkpoints
+04:26:19 [INFO] [LOO-c0-1] trained 50 epochs, 1 checkpoints
+04:26:24 [INFO] [LOO-c0-1] trained 50 epochs, 1 checkpoints
+04:26:28 [INFO] [LOO-c0-1] trained 50 epochs, 1 checkpoints
+04:26:33 [INFO] [LOO-c0-1] trained 50 epochs, 1 checkpoints
+04:26:37 [INFO] [LOO-c0-1] trained 50 epochs, 1 checkpoints
+04:26:42 [INFO] [LOO-c0-2] trained 50 epochs, 1 checkpoints
+04:26:46 [INFO] [LOO-c0-2] trained 50 epochs, 1 checkpoints
+04:26:51 [INFO] [LOO-c0-2] trained 50 epochs, 1 checkpoints
+04:26:55 [INFO] [LOO-c0-2] trained 50 epochs, 1 checkpoints
+04:27:00 [INFO] [LOO-c0-2] trained 50 epochs, 1 checkpoints
+04:27:04 [INFO] [LOO-c0-3] trained 50 epochs, 1 checkpoints
+04:27:09 [INFO] [LOO-c0-3] trained 50 epochs, 1 checkpoints
+04:27:13 [INFO] [LOO-c0-3] trained 50 epochs, 1 checkpoints
+04:27:18 [INFO] [LOO-c0-3] trained 50 epochs, 1 checkpoints
+04:27:22 [INFO] [LOO-c0-3] trained 50 epochs, 1 checkpoints
+04:27:27 [INFO] [LOO-c0-4] trained 50 epochs, 1 checkpoints
+04:27:31 [INFO] [LOO-c0-4] trained 50 epochs, 1 checkpoints
+04:27:36 [INFO] [LOO-c0-4] trained 50 epochs, 1 checkpoints
+04:27:40 [INFO] [LOO-c0-4] trained 50 epochs, 1 checkpoints
+04:27:45 [INFO] [LOO-c0-4] trained 50 epochs, 1 checkpoints
+04:27:49 [INFO] [LOO-c0-5] trained 50 epochs, 1 checkpoints
+04:27:54 [INFO] [LOO-c0-5] trained 50 epochs, 1 checkpoints
+04:27:58 [INFO] [LOO-c0-5] trained 50 epochs, 1 checkpoints
+04:28:03 [INFO] [LOO-c0-5] trained 50 epochs, 1 checkpoints
+04:28:07 [INFO] [LOO-c0-5] trained 50 epochs, 1 checkpoints
+04:28:12 [INFO] [LOO-c0-6] trained 50 epochs, 1 checkpoints
+04:28:16 [INFO] [LOO-c0-6] trained 50 epochs, 1 checkpoints
+04:28:21 [INFO] [LOO-c0-6] trained 50 epochs, 1 checkpoints
+04:28:25 [INFO] [LOO-c0-6] trained 50 epochs, 1 checkpoints
+04:28:30 [INFO] [LOO-c0-6] trained 50 epochs, 1 checkpoints
+04:28:34 [INFO] [LOO-c0-7] trained 50 epochs, 1 checkpoints
+04:28:39 [INFO] [LOO-c0-7] trained 50 epochs, 1 checkpoints
+04:28:43 [INFO] [LOO-c0-7] trained 50 epochs, 1 checkpoints
+04:28:48 [INFO] [LOO-c0-7] trained 50 epochs, 1 checkpoints
+04:28:52 [INFO] [LOO-c0-7] trained 50 epochs, 1 checkpoints
+04:28:57 [INFO] [LOO-c0-8] trained 50 epochs, 1 checkpoints
+04:29:01 [INFO] [LOO-c0-8] trained 50 epochs, 1 checkpoints
+04:29:06 [INFO] [LOO-c0-8] trained 50 epochs, 1 checkpoints
+04:29:10 [INFO] [LOO-c0-8] trained 50 epochs, 1 checkpoints
+04:29:15 [INFO] [LOO-c0-8] trained 50 epochs, 1 checkpoints
+04:29:19 [INFO] [LOO-c0-9] trained 50 epochs, 1 checkpoints
+04:29:24 [INFO] [LOO-c0-9] trained 50 epochs, 1 checkpoints
+04:29:28 [INFO] [LOO-c0-9] trained 50 epochs, 1 checkpoints
+04:29:33 [INFO] [LOO-c0-9] trained 50 epochs, 1 checkpoints
+04:29:37 [INFO] [LOO-c0-9] trained 50 epochs, 1 checkpoints
+04:29:37 [INFO]     LOO 10/50: Δloss=-0.025026
+04:29:42 [INFO] [LOO-c0-10] trained 50 epochs, 1 checkpoints
+04:29:46 [INFO] [LOO-c0-10] trained 50 epochs, 1 checkpoints
+04:29:51 [INFO] [LOO-c0-10] trained 50 epochs, 1 checkpoints
+04:29:55 [INFO] [LOO-c0-10] trained 50 epochs, 1 checkpoints
+04:30:00 [INFO] [LOO-c0-10] trained 50 epochs, 1 checkpoints
+04:30:04 [INFO] [LOO-c0-11] trained 50 epochs, 1 checkpoints
+04:30:09 [INFO] [LOO-c0-11] trained 50 epochs, 1 checkpoints
+04:30:13 [INFO] [LOO-c0-11] trained 50 epochs, 1 checkpoints
+04:30:18 [INFO] [LOO-c0-11] trained 50 epochs, 1 checkpoints
+04:30:22 [INFO] [LOO-c0-11] trained 50 epochs, 1 checkpoints
+04:30:27 [INFO] [LOO-c0-12] trained 50 epochs, 1 checkpoints
+04:30:31 [INFO] [LOO-c0-12] trained 50 epochs, 1 checkpoints
+04:30:36 [INFO] [LOO-c0-12] trained 50 epochs, 1 checkpoints
+04:30:40 [INFO] [LOO-c0-12] trained 50 epochs, 1 checkpoints
+04:30:45 [INFO] [LOO-c0-12] trained 50 epochs, 1 checkpoints
+04:30:50 [INFO] [LOO-c0-13] trained 50 epochs, 1 checkpoints
+04:30:54 [INFO] [LOO-c0-13] trained 50 epochs, 1 checkpoints
+04:30:58 [INFO] [LOO-c0-13] trained 50 epochs, 1 checkpoints
+04:31:03 [INFO] [LOO-c0-13] trained 50 epochs, 1 checkpoints
+04:31:07 [INFO] [LOO-c0-13] trained 50 epochs, 1 checkpoints
+04:31:12 [INFO] [LOO-c0-14] trained 50 epochs, 1 checkpoints
+04:31:17 [INFO] [LOO-c0-14] trained 50 epochs, 1 checkpoints
+04:31:21 [INFO] [LOO-c0-14] trained 50 epochs, 1 checkpoints
+04:31:26 [INFO] [LOO-c0-14] trained 50 epochs, 1 checkpoints
+04:31:30 [INFO] [LOO-c0-14] trained 50 epochs, 1 checkpoints
+04:31:35 [INFO] [LOO-c0-15] trained 50 epochs, 1 checkpoints
+04:31:39 [INFO] [LOO-c0-15] trained 50 epochs, 1 checkpoints
+04:31:44 [INFO] [LOO-c0-15] trained 50 epochs, 1 checkpoints
+04:31:48 [INFO] [LOO-c0-15] trained 50 epochs, 1 checkpoints
+04:31:53 [INFO] [LOO-c0-15] trained 50 epochs, 1 checkpoints
+04:31:57 [INFO] [LOO-c0-16] trained 50 epochs, 1 checkpoints
+04:32:02 [INFO] [LOO-c0-16] trained 50 epochs, 1 checkpoints
+04:32:06 [INFO] [LOO-c0-16] trained 50 epochs, 1 checkpoints
+04:32:11 [INFO] [LOO-c0-16] trained 50 epochs, 1 checkpoints
+04:32:15 [INFO] [LOO-c0-16] trained 50 epochs, 1 checkpoints
+04:32:20 [INFO] [LOO-c0-17] trained 50 epochs, 1 checkpoints
+04:32:24 [INFO] [LOO-c0-17] trained 50 epochs, 1 checkpoints
+04:32:29 [INFO] [LOO-c0-17] trained 50 epochs, 1 checkpoints
+04:32:33 [INFO] [LOO-c0-17] trained 50 epochs, 1 checkpoints
+04:32:38 [INFO] [LOO-c0-17] trained 50 epochs, 1 checkpoints
+04:32:42 [INFO] [LOO-c0-18] trained 50 epochs, 1 checkpoints
+04:32:47 [INFO] [LOO-c0-18] trained 50 epochs, 1 checkpoints
+04:32:51 [INFO] [LOO-c0-18] trained 50 epochs, 1 checkpoints
+04:32:56 [INFO] [LOO-c0-18] trained 50 epochs, 1 checkpoints
+04:33:00 [INFO] [LOO-c0-18] trained 50 epochs, 1 checkpoints
+04:33:05 [INFO] [LOO-c0-19] trained 50 epochs, 1 checkpoints
+04:33:09 [INFO] [LOO-c0-19] trained 50 epochs, 1 checkpoints
+04:33:14 [INFO] [LOO-c0-19] trained 50 epochs, 1 checkpoints
+04:33:18 [INFO] [LOO-c0-19] trained 50 epochs, 1 checkpoints
+04:33:23 [INFO] [LOO-c0-19] trained 50 epochs, 1 checkpoints
+04:33:23 [INFO]     LOO 20/50: Δloss=-0.040467
+04:33:27 [INFO] [LOO-c0-20] trained 50 epochs, 1 checkpoints
+04:33:32 [INFO] [LOO-c0-20] trained 50 epochs, 1 checkpoints
+04:33:36 [INFO] [LOO-c0-20] trained 50 epochs, 1 checkpoints
+04:33:41 [INFO] [LOO-c0-20] trained 50 epochs, 1 checkpoints
+04:33:45 [INFO] [LOO-c0-20] trained 50 epochs, 1 checkpoints
+04:33:50 [INFO] [LOO-c0-21] trained 50 epochs, 1 checkpoints
+04:33:54 [INFO] [LOO-c0-21] trained 50 epochs, 1 checkpoints
+04:33:59 [INFO] [LOO-c0-21] trained 50 epochs, 1 checkpoints
+04:34:03 [INFO] [LOO-c0-21] trained 50 epochs, 1 checkpoints
+04:34:08 [INFO] [LOO-c0-21] trained 50 epochs, 1 checkpoints
+04:34:12 [INFO] [LOO-c0-22] trained 50 epochs, 1 checkpoints
+04:34:17 [INFO] [LOO-c0-22] trained 50 epochs, 1 checkpoints
+04:34:21 [INFO] [LOO-c0-22] trained 50 epochs, 1 checkpoints
+04:34:26 [INFO] [LOO-c0-22] trained 50 epochs, 1 checkpoints
+04:34:30 [INFO] [LOO-c0-22] trained 50 epochs, 1 checkpoints
+04:34:35 [INFO] [LOO-c0-23] trained 50 epochs, 1 checkpoints
+04:34:39 [INFO] [LOO-c0-23] trained 50 epochs, 1 checkpoints
+04:34:44 [INFO] [LOO-c0-23] trained 50 epochs, 1 checkpoints
+04:34:48 [INFO] [LOO-c0-23] trained 50 epochs, 1 checkpoints
+04:34:53 [INFO] [LOO-c0-23] trained 50 epochs, 1 checkpoints
+04:34:57 [INFO] [LOO-c0-24] trained 50 epochs, 1 checkpoints
+04:35:02 [INFO] [LOO-c0-24] trained 50 epochs, 1 checkpoints
+04:35:06 [INFO] [LOO-c0-24] trained 50 epochs, 1 checkpoints
+04:35:11 [INFO] [LOO-c0-24] trained 50 epochs, 1 checkpoints
+04:35:15 [INFO] [LOO-c0-24] trained 50 epochs, 1 checkpoints
+04:35:20 [INFO] [LOO-c0-25] trained 50 epochs, 1 checkpoints
+04:35:24 [INFO] [LOO-c0-25] trained 50 epochs, 1 checkpoints
+04:35:29 [INFO] [LOO-c0-25] trained 50 epochs, 1 checkpoints
+04:35:33 [INFO] [LOO-c0-25] trained 50 epochs, 1 checkpoints
+04:35:38 [INFO] [LOO-c0-25] trained 50 epochs, 1 checkpoints
+04:35:42 [INFO] [LOO-c0-26] trained 50 epochs, 1 checkpoints
+04:35:47 [INFO] [LOO-c0-26] trained 50 epochs, 1 checkpoints
+04:35:51 [INFO] [LOO-c0-26] trained 50 epochs, 1 checkpoints
+04:35:56 [INFO] [LOO-c0-26] trained 50 epochs, 1 checkpoints
+04:36:00 [INFO] [LOO-c0-26] trained 50 epochs, 1 checkpoints
+04:36:05 [INFO] [LOO-c0-27] trained 50 epochs, 1 checkpoints
+04:36:09 [INFO] [LOO-c0-27] trained 50 epochs, 1 checkpoints
+04:36:14 [INFO] [LOO-c0-27] trained 50 epochs, 1 checkpoints
+04:36:18 [INFO] [LOO-c0-27] trained 50 epochs, 1 checkpoints
+04:36:23 [INFO] [LOO-c0-27] trained 50 epochs, 1 checkpoints
+04:36:27 [INFO] [LOO-c0-28] trained 50 epochs, 1 checkpoints
+04:36:32 [INFO] [LOO-c0-28] trained 50 epochs, 1 checkpoints
+04:36:36 [INFO] [LOO-c0-28] trained 50 epochs, 1 checkpoints
+04:36:41 [INFO] [LOO-c0-28] trained 50 epochs, 1 checkpoints
+04:36:46 [INFO] [LOO-c0-28] trained 50 epochs, 1 checkpoints
+04:36:50 [INFO] [LOO-c0-29] trained 50 epochs, 1 checkpoints
+04:36:55 [INFO] [LOO-c0-29] trained 50 epochs, 1 checkpoints
+04:36:59 [INFO] [LOO-c0-29] trained 50 epochs, 1 checkpoints
+04:37:04 [INFO] [LOO-c0-29] trained 50 epochs, 1 checkpoints
+04:37:08 [INFO] [LOO-c0-29] trained 50 epochs, 1 checkpoints
+04:37:08 [INFO]     LOO 30/50: Δloss=-0.046191
+04:37:13 [INFO] [LOO-c0-30] trained 50 epochs, 1 checkpoints
+04:37:17 [INFO] [LOO-c0-30] trained 50 epochs, 1 checkpoints
+04:37:22 [INFO] [LOO-c0-30] trained 50 epochs, 1 checkpoints
+04:37:26 [INFO] [LOO-c0-30] trained 50 epochs, 1 checkpoints
+04:37:31 [INFO] [LOO-c0-30] trained 50 epochs, 1 checkpoints
+04:37:35 [INFO] [LOO-c0-31] trained 50 epochs, 1 checkpoints
+04:37:40 [INFO] [LOO-c0-31] trained 50 epochs, 1 checkpoints
+04:37:44 [INFO] [LOO-c0-31] trained 50 epochs, 1 checkpoints
+04:37:49 [INFO] [LOO-c0-31] trained 50 epochs, 1 checkpoints
+04:37:53 [INFO] [LOO-c0-31] trained 50 epochs, 1 checkpoints
+04:37:58 [INFO] [LOO-c0-32] trained 50 epochs, 1 checkpoints
+04:38:02 [INFO] [LOO-c0-32] trained 50 epochs, 1 checkpoints
+04:38:07 [INFO] [LOO-c0-32] trained 50 epochs, 1 checkpoints
+04:38:11 [INFO] [LOO-c0-32] trained 50 epochs, 1 checkpoints
+04:38:16 [INFO] [LOO-c0-32] trained 50 epochs, 1 checkpoints
+04:38:20 [INFO] [LOO-c0-33] trained 50 epochs, 1 checkpoints
+04:38:25 [INFO] [LOO-c0-33] trained 50 epochs, 1 checkpoints
+04:38:29 [INFO] [LOO-c0-33] trained 50 epochs, 1 checkpoints
+04:38:34 [INFO] [LOO-c0-33] trained 50 epochs, 1 checkpoints
+04:38:38 [INFO] [LOO-c0-33] trained 50 epochs, 1 checkpoints
+04:38:43 [INFO] [LOO-c0-34] trained 50 epochs, 1 checkpoints
+04:38:47 [INFO] [LOO-c0-34] trained 50 epochs, 1 checkpoints
+04:38:52 [INFO] [LOO-c0-34] trained 50 epochs, 1 checkpoints
+04:38:56 [INFO] [LOO-c0-34] trained 50 epochs, 1 checkpoints
+04:39:01 [INFO] [LOO-c0-34] trained 50 epochs, 1 checkpoints
+04:39:05 [INFO] [LOO-c0-35] trained 50 epochs, 1 checkpoints
+04:39:10 [INFO] [LOO-c0-35] trained 50 epochs, 1 checkpoints
+04:39:14 [INFO] [LOO-c0-35] trained 50 epochs, 1 checkpoints
+04:39:19 [INFO] [LOO-c0-35] trained 50 epochs, 1 checkpoints
+04:39:23 [INFO] [LOO-c0-35] trained 50 epochs, 1 checkpoints
+04:39:28 [INFO] [LOO-c0-36] trained 50 epochs, 1 checkpoints
+04:39:32 [INFO] [LOO-c0-36] trained 50 epochs, 1 checkpoints
+04:39:37 [INFO] [LOO-c0-36] trained 50 epochs, 1 checkpoints
+04:39:41 [INFO] [LOO-c0-36] trained 50 epochs, 1 checkpoints
+04:39:46 [INFO] [LOO-c0-36] trained 50 epochs, 1 checkpoints
+04:39:50 [INFO] [LOO-c0-37] trained 50 epochs, 1 checkpoints
+04:39:55 [INFO] [LOO-c0-37] trained 50 epochs, 1 checkpoints
+04:39:59 [INFO] [LOO-c0-37] trained 50 epochs, 1 checkpoints
+04:40:04 [INFO] [LOO-c0-37] trained 50 epochs, 1 checkpoints
+04:40:08 [INFO] [LOO-c0-37] trained 50 epochs, 1 checkpoints
+04:40:13 [INFO] [LOO-c0-38] trained 50 epochs, 1 checkpoints
+04:40:17 [INFO] [LOO-c0-38] trained 50 epochs, 1 checkpoints
+04:40:22 [INFO] [LOO-c0-38] trained 50 epochs, 1 checkpoints
+04:40:26 [INFO] [LOO-c0-38] trained 50 epochs, 1 checkpoints
+04:40:31 [INFO] [LOO-c0-38] trained 50 epochs, 1 checkpoints
+04:40:35 [INFO] [LOO-c0-39] trained 50 epochs, 1 checkpoints
+04:40:40 [INFO] [LOO-c0-39] trained 50 epochs, 1 checkpoints
+04:40:44 [INFO] [LOO-c0-39] trained 50 epochs, 1 checkpoints
+04:40:49 [INFO] [LOO-c0-39] trained 50 epochs, 1 checkpoints
+04:40:53 [INFO] [LOO-c0-39] trained 50 epochs, 1 checkpoints
+04:40:53 [INFO]     LOO 40/50: Δloss=-0.024814
+04:40:58 [INFO] [LOO-c0-40] trained 50 epochs, 1 checkpoints
+04:41:02 [INFO] [LOO-c0-40] trained 50 epochs, 1 checkpoints
+04:41:07 [INFO] [LOO-c0-40] trained 50 epochs, 1 checkpoints
+04:41:11 [INFO] [LOO-c0-40] trained 50 epochs, 1 checkpoints
+04:41:16 [INFO] [LOO-c0-40] trained 50 epochs, 1 checkpoints
+04:41:20 [INFO] [LOO-c0-41] trained 50 epochs, 1 checkpoints
+04:41:25 [INFO] [LOO-c0-41] trained 50 epochs, 1 checkpoints
+04:41:29 [INFO] [LOO-c0-41] trained 50 epochs, 1 checkpoints
+04:41:34 [INFO] [LOO-c0-41] trained 50 epochs, 1 checkpoints
+04:41:38 [INFO] [LOO-c0-41] trained 50 epochs, 1 checkpoints
+04:41:43 [INFO] [LOO-c0-42] trained 50 epochs, 1 checkpoints
+04:41:47 [INFO] [LOO-c0-42] trained 50 epochs, 1 checkpoints
+04:41:52 [INFO] [LOO-c0-42] trained 50 epochs, 1 checkpoints
+04:41:56 [INFO] [LOO-c0-42] trained 50 epochs, 1 checkpoints
+04:42:01 [INFO] [LOO-c0-42] trained 50 epochs, 1 checkpoints
+04:42:05 [INFO] [LOO-c0-43] trained 50 epochs, 1 checkpoints
+04:42:10 [INFO] [LOO-c0-43] trained 50 epochs, 1 checkpoints
+04:42:14 [INFO] [LOO-c0-43] trained 50 epochs, 1 checkpoints
+04:42:19 [INFO] [LOO-c0-43] trained 50 epochs, 1 checkpoints
+04:42:23 [INFO] [LOO-c0-43] trained 50 epochs, 1 checkpoints
+04:42:28 [INFO] [LOO-c0-44] trained 50 epochs, 1 checkpoints
+04:42:32 [INFO] [LOO-c0-44] trained 50 epochs, 1 checkpoints
+04:42:37 [INFO] [LOO-c0-44] trained 50 epochs, 1 checkpoints
+04:42:41 [INFO] [LOO-c0-44] trained 50 epochs, 1 checkpoints
+04:42:46 [INFO] [LOO-c0-44] trained 50 epochs, 1 checkpoints
+04:42:50 [INFO] [LOO-c0-45] trained 50 epochs, 1 checkpoints
+04:42:55 [INFO] [LOO-c0-45] trained 50 epochs, 1 checkpoints
+04:42:59 [INFO] [LOO-c0-45] trained 50 epochs, 1 checkpoints
+04:43:04 [INFO] [LOO-c0-45] trained 50 epochs, 1 checkpoints
+04:43:09 [INFO] [LOO-c0-45] trained 50 epochs, 1 checkpoints
+04:43:13 [INFO] [LOO-c0-46] trained 50 epochs, 1 checkpoints
+04:43:18 [INFO] [LOO-c0-46] trained 50 epochs, 1 checkpoints
+04:43:22 [INFO] [LOO-c0-46] trained 50 epochs, 1 checkpoints
+04:43:27 [INFO] [LOO-c0-46] trained 50 epochs, 1 checkpoints
+04:43:31 [INFO] [LOO-c0-46] trained 50 epochs, 1 checkpoints
+04:43:36 [INFO] [LOO-c0-47] trained 50 epochs, 1 checkpoints
+04:43:40 [INFO] [LOO-c0-47] trained 50 epochs, 1 checkpoints
+04:43:45 [INFO] [LOO-c0-47] trained 50 epochs, 1 checkpoints
+04:43:49 [INFO] [LOO-c0-47] trained 50 epochs, 1 checkpoints
+04:43:54 [INFO] [LOO-c0-47] trained 50 epochs, 1 checkpoints
+04:43:58 [INFO] [LOO-c0-48] trained 50 epochs, 1 checkpoints
+04:44:03 [INFO] [LOO-c0-48] trained 50 epochs, 1 checkpoints
+04:44:07 [INFO] [LOO-c0-48] trained 50 epochs, 1 checkpoints
+04:44:12 [INFO] [LOO-c0-48] trained 50 epochs, 1 checkpoints
+04:44:16 [INFO] [LOO-c0-48] trained 50 epochs, 1 checkpoints
+04:44:21 [INFO] [LOO-c0-49] trained 50 epochs, 1 checkpoints
+04:44:25 [INFO] [LOO-c0-49] trained 50 epochs, 1 checkpoints
+04:44:30 [INFO] [LOO-c0-49] trained 50 epochs, 1 checkpoints
+04:44:34 [INFO] [LOO-c0-49] trained 50 epochs, 1 checkpoints
+04:44:39 [INFO] [LOO-c0-49] trained 50 epochs, 1 checkpoints
+04:44:39 [INFO]     LOO 50/50: Δloss=-0.029014
+04:44:39 [INFO]   Spearman r=0.2642 (p=0.0637), Pearson r=0.1316 (p=0.3625)
+04:44:39 [INFO]   --- Part B: Leave-K-Out ---
+04:44:43 [INFO] [LKO-c0-top-10 proponents] trained 50 epochs, 1 checkpoints
+04:44:48 [INFO] [LKO-c0-top-10 proponents] trained 50 epochs, 1 checkpoints
+04:44:52 [INFO] [LKO-c0-top-10 proponents] trained 50 epochs, 1 checkpoints
+04:44:57 [INFO] [LKO-c0-top-10 proponents] trained 50 epochs, 1 checkpoints
+04:45:01 [INFO] [LKO-c0-top-10 proponents] trained 50 epochs, 1 checkpoints
+04:45:01 [INFO]     top-10 proponents: Δloss=-0.055512 ↓
+04:45:06 [INFO] [LKO-c0-bottom-10 opponents] trained 50 epochs, 1 checkpoints
+04:45:10 [INFO] [LKO-c0-bottom-10 opponents] trained 50 epochs, 1 checkpoints
+04:45:15 [INFO] [LKO-c0-bottom-10 opponents] trained 50 epochs, 1 checkpoints
+04:45:19 [INFO] [LKO-c0-bottom-10 opponents] trained 50 epochs, 1 checkpoints
+04:45:24 [INFO] [LKO-c0-bottom-10 opponents] trained 50 epochs, 1 checkpoints
+04:45:24 [INFO]     bottom-10 opponents: Δloss=-0.050465 ↓
+04:45:28 [INFO] [LKO-c0-top-20 proponents] trained 50 epochs, 1 checkpoints
+04:45:33 [INFO] [LKO-c0-top-20 proponents] trained 50 epochs, 1 checkpoints
+04:45:37 [INFO] [LKO-c0-top-20 proponents] trained 50 epochs, 1 checkpoints
+04:45:42 [INFO] [LKO-c0-top-20 proponents] trained 50 epochs, 1 checkpoints
+04:45:46 [INFO] [LKO-c0-top-20 proponents] trained 50 epochs, 1 checkpoints
+04:45:46 [INFO]     top-20 proponents: Δloss=-0.039640 ↓
+04:45:51 [INFO] [LKO-c0-bottom-20 opponents] trained 50 epochs, 1 checkpoints
+04:45:55 [INFO] [LKO-c0-bottom-20 opponents] trained 50 epochs, 1 checkpoints
+04:46:00 [INFO] [LKO-c0-bottom-20 opponents] trained 50 epochs, 1 checkpoints
+04:46:04 [INFO] [LKO-c0-bottom-20 opponents] trained 50 epochs, 1 checkpoints
+04:46:09 [INFO] [LKO-c0-bottom-20 opponents] trained 50 epochs, 1 checkpoints
+04:46:09 [INFO]     bottom-20 opponents: Δloss=-0.061982 ↓
+04:46:13 [INFO] [LKO-c0-top-50 proponents] trained 50 epochs, 1 checkpoints
+04:46:18 [INFO] [LKO-c0-top-50 proponents] trained 50 epochs, 1 checkpoints
+04:46:22 [INFO] [LKO-c0-top-50 proponents] trained 50 epochs, 1 checkpoints
+04:46:27 [INFO] [LKO-c0-top-50 proponents] trained 50 epochs, 1 checkpoints
+04:46:31 [INFO] [LKO-c0-top-50 proponents] trained 50 epochs, 1 checkpoints
+04:46:31 [INFO]     top-50 proponents: Δloss=-0.010669 ↓
+04:46:36 [INFO] [LKO-c0-bottom-50 opponents] trained 50 epochs, 1 checkpoints
+04:46:40 [INFO] [LKO-c0-bottom-50 opponents] trained 50 epochs, 1 checkpoints
+04:46:45 [INFO] [LKO-c0-bottom-50 opponents] trained 50 epochs, 1 checkpoints
+04:46:49 [INFO] [LKO-c0-bottom-50 opponents] trained 50 epochs, 1 checkpoints
+04:46:53 [INFO] [LKO-c0-bottom-50 opponents] trained 50 epochs, 1 checkpoints
+04:46:53 [INFO]     bottom-50 opponents: Δloss=-0.051606 ↓
+04:46:53 [INFO]   Class 0 done in 1286.2s
+04:46:54 [INFO] 
+======================================================================
+  CLASS 1 (DME)
+======================================================================
+04:46:54 [INFO]   --- Part A: Single-point LOO (50 pts × 5 seeds) ---
+04:46:56 [INFO] [BL-c1-s42] trained 50 epochs, 1 checkpoints
+04:46:58 [INFO] [BL-c1-s43] trained 50 epochs, 1 checkpoints
+04:46:59 [INFO] [BL-c1-s44] trained 50 epochs, 1 checkpoints
+04:47:01 [INFO] [BL-c1-s45] trained 50 epochs, 1 checkpoints
+04:47:03 [INFO] [BL-c1-s46] trained 50 epochs, 1 checkpoints
+04:47:03 [INFO]   Baseline loss: 0.159536 ± 0.030998
+04:47:05 [INFO] [LOO-c1-0] trained 50 epochs, 1 checkpoints
+04:47:07 [INFO] [LOO-c1-0] trained 50 epochs, 1 checkpoints
+04:47:08 [INFO] [LOO-c1-0] trained 50 epochs, 1 checkpoints
+04:47:10 [INFO] [LOO-c1-0] trained 50 epochs, 1 checkpoints
+04:47:12 [INFO] [LOO-c1-0] trained 50 epochs, 1 checkpoints
+04:47:14 [INFO] [LOO-c1-1] trained 50 epochs, 1 checkpoints
+04:47:15 [INFO] [LOO-c1-1] trained 50 epochs, 1 checkpoints
+04:47:17 [INFO] [LOO-c1-1] trained 50 epochs, 1 checkpoints
+04:47:19 [INFO] [LOO-c1-1] trained 50 epochs, 1 checkpoints
+04:47:21 [INFO] [LOO-c1-1] trained 50 epochs, 1 checkpoints
+04:47:23 [INFO] [LOO-c1-2] trained 50 epochs, 1 checkpoints
+04:47:24 [INFO] [LOO-c1-2] trained 50 epochs, 1 checkpoints
+04:47:26 [INFO] [LOO-c1-2] trained 50 epochs, 1 checkpoints
+04:47:28 [INFO] [LOO-c1-2] trained 50 epochs, 1 checkpoints
+04:47:30 [INFO] [LOO-c1-2] trained 50 epochs, 1 checkpoints
+04:47:32 [INFO] [LOO-c1-3] trained 50 epochs, 1 checkpoints
+04:47:33 [INFO] [LOO-c1-3] trained 50 epochs, 1 checkpoints
+04:47:35 [INFO] [LOO-c1-3] trained 50 epochs, 1 checkpoints
+04:47:37 [INFO] [LOO-c1-3] trained 50 epochs, 1 checkpoints
+04:47:39 [INFO] [LOO-c1-3] trained 50 epochs, 1 checkpoints
+04:47:41 [INFO] [LOO-c1-4] trained 50 epochs, 1 checkpoints
+04:47:42 [INFO] [LOO-c1-4] trained 50 epochs, 1 checkpoints
+04:47:44 [INFO] [LOO-c1-4] trained 50 epochs, 1 checkpoints
+04:47:46 [INFO] [LOO-c1-4] trained 50 epochs, 1 checkpoints
+04:47:48 [INFO] [LOO-c1-4] trained 50 epochs, 1 checkpoints
+04:47:49 [INFO] [LOO-c1-5] trained 50 epochs, 1 checkpoints
+04:47:51 [INFO] [LOO-c1-5] trained 50 epochs, 1 checkpoints
+04:47:53 [INFO] [LOO-c1-5] trained 50 epochs, 1 checkpoints
+04:47:55 [INFO] [LOO-c1-5] trained 50 epochs, 1 checkpoints
+04:47:57 [INFO] [LOO-c1-5] trained 50 epochs, 1 checkpoints
+04:47:58 [INFO] [LOO-c1-6] trained 50 epochs, 1 checkpoints
+04:48:00 [INFO] [LOO-c1-6] trained 50 epochs, 1 checkpoints
+04:48:02 [INFO] [LOO-c1-6] trained 50 epochs, 1 checkpoints
+04:48:04 [INFO] [LOO-c1-6] trained 50 epochs, 1 checkpoints
+04:48:06 [INFO] [LOO-c1-6] trained 50 epochs, 1 checkpoints
+04:48:07 [INFO] [LOO-c1-7] trained 50 epochs, 1 checkpoints
+04:48:09 [INFO] [LOO-c1-7] trained 50 epochs, 1 checkpoints
+04:48:11 [INFO] [LOO-c1-7] trained 50 epochs, 1 checkpoints
+04:48:13 [INFO] [LOO-c1-7] trained 50 epochs, 1 checkpoints
+04:48:15 [INFO] [LOO-c1-7] trained 50 epochs, 1 checkpoints
+04:48:16 [INFO] [LOO-c1-8] trained 50 epochs, 1 checkpoints
+04:48:18 [INFO] [LOO-c1-8] trained 50 epochs, 1 checkpoints
+04:48:20 [INFO] [LOO-c1-8] trained 50 epochs, 1 checkpoints
+04:48:22 [INFO] [LOO-c1-8] trained 50 epochs, 1 checkpoints
+04:48:24 [INFO] [LOO-c1-8] trained 50 epochs, 1 checkpoints
+04:48:25 [INFO] [LOO-c1-9] trained 50 epochs, 1 checkpoints
+04:48:27 [INFO] [LOO-c1-9] trained 50 epochs, 1 checkpoints
+04:48:29 [INFO] [LOO-c1-9] trained 50 epochs, 1 checkpoints
+04:48:31 [INFO] [LOO-c1-9] trained 50 epochs, 1 checkpoints
+04:48:33 [INFO] [LOO-c1-9] trained 50 epochs, 1 checkpoints
+04:48:33 [INFO]     LOO 10/50: Δloss=+0.005310
+04:48:34 [INFO] [LOO-c1-10] trained 50 epochs, 1 checkpoints
+04:48:36 [INFO] [LOO-c1-10] trained 50 epochs, 1 checkpoints
+04:48:38 [INFO] [LOO-c1-10] trained 50 epochs, 1 checkpoints
+04:48:40 [INFO] [LOO-c1-10] trained 50 epochs, 1 checkpoints
+04:48:41 [INFO] [LOO-c1-10] trained 50 epochs, 1 checkpoints
+04:48:43 [INFO] [LOO-c1-11] trained 50 epochs, 1 checkpoints
+04:48:45 [INFO] [LOO-c1-11] trained 50 epochs, 1 checkpoints
+04:48:47 [INFO] [LOO-c1-11] trained 50 epochs, 1 checkpoints
+04:48:49 [INFO] [LOO-c1-11] trained 50 epochs, 1 checkpoints
+04:48:50 [INFO] [LOO-c1-11] trained 50 epochs, 1 checkpoints
+04:48:52 [INFO] [LOO-c1-12] trained 50 epochs, 1 checkpoints
+04:48:54 [INFO] [LOO-c1-12] trained 50 epochs, 1 checkpoints
+04:48:56 [INFO] [LOO-c1-12] trained 50 epochs, 1 checkpoints
+04:48:58 [INFO] [LOO-c1-12] trained 50 epochs, 1 checkpoints
+04:48:59 [INFO] [LOO-c1-12] trained 50 epochs, 1 checkpoints
+04:49:01 [INFO] [LOO-c1-13] trained 50 epochs, 1 checkpoints
+04:49:03 [INFO] [LOO-c1-13] trained 50 epochs, 1 checkpoints
+04:49:05 [INFO] [LOO-c1-13] trained 50 epochs, 1 checkpoints
+04:49:06 [INFO] [LOO-c1-13] trained 50 epochs, 1 checkpoints
+04:49:08 [INFO] [LOO-c1-13] trained 50 epochs, 1 checkpoints
+04:49:10 [INFO] [LOO-c1-14] trained 50 epochs, 1 checkpoints
+04:49:12 [INFO] [LOO-c1-14] trained 50 epochs, 1 checkpoints
+04:49:14 [INFO] [LOO-c1-14] trained 50 epochs, 1 checkpoints
+04:49:15 [INFO] [LOO-c1-14] trained 50 epochs, 1 checkpoints
+04:49:17 [INFO] [LOO-c1-14] trained 50 epochs, 1 checkpoints
+04:49:19 [INFO] [LOO-c1-15] trained 50 epochs, 1 checkpoints
+04:49:21 [INFO] [LOO-c1-15] trained 50 epochs, 1 checkpoints
+04:49:23 [INFO] [LOO-c1-15] trained 50 epochs, 1 checkpoints
+04:49:24 [INFO] [LOO-c1-15] trained 50 epochs, 1 checkpoints
+04:49:26 [INFO] [LOO-c1-15] trained 50 epochs, 1 checkpoints
+04:49:28 [INFO] [LOO-c1-16] trained 50 epochs, 1 checkpoints
+04:49:30 [INFO] [LOO-c1-16] trained 50 epochs, 1 checkpoints
+04:49:32 [INFO] [LOO-c1-16] trained 50 epochs, 1 checkpoints
+04:49:33 [INFO] [LOO-c1-16] trained 50 epochs, 1 checkpoints
+04:49:35 [INFO] [LOO-c1-16] trained 50 epochs, 1 checkpoints
+04:49:37 [INFO] [LOO-c1-17] trained 50 epochs, 1 checkpoints
+04:49:39 [INFO] [LOO-c1-17] trained 50 epochs, 1 checkpoints
+04:49:41 [INFO] [LOO-c1-17] trained 50 epochs, 1 checkpoints
+04:49:42 [INFO] [LOO-c1-17] trained 50 epochs, 1 checkpoints
+04:49:44 [INFO] [LOO-c1-17] trained 50 epochs, 1 checkpoints
+04:49:46 [INFO] [LOO-c1-18] trained 50 epochs, 1 checkpoints
+04:49:48 [INFO] [LOO-c1-18] trained 50 epochs, 1 checkpoints
+04:49:49 [INFO] [LOO-c1-18] trained 50 epochs, 1 checkpoints
+04:49:51 [INFO] [LOO-c1-18] trained 50 epochs, 1 checkpoints
+04:49:53 [INFO] [LOO-c1-18] trained 50 epochs, 1 checkpoints
+04:49:55 [INFO] [LOO-c1-19] trained 50 epochs, 1 checkpoints
+04:49:57 [INFO] [LOO-c1-19] trained 50 epochs, 1 checkpoints
+04:49:58 [INFO] [LOO-c1-19] trained 50 epochs, 1 checkpoints
+04:50:00 [INFO] [LOO-c1-19] trained 50 epochs, 1 checkpoints
+04:50:02 [INFO] [LOO-c1-19] trained 50 epochs, 1 checkpoints
+04:50:02 [INFO]     LOO 20/50: Δloss=+0.003308
+04:50:04 [INFO] [LOO-c1-20] trained 50 epochs, 1 checkpoints
+04:50:06 [INFO] [LOO-c1-20] trained 50 epochs, 1 checkpoints
+04:50:07 [INFO] [LOO-c1-20] trained 50 epochs, 1 checkpoints
+04:50:09 [INFO] [LOO-c1-20] trained 50 epochs, 1 checkpoints
+04:50:11 [INFO] [LOO-c1-20] trained 50 epochs, 1 checkpoints
+04:50:13 [INFO] [LOO-c1-21] trained 50 epochs, 1 checkpoints
+04:50:15 [INFO] [LOO-c1-21] trained 50 epochs, 1 checkpoints
+04:50:16 [INFO] [LOO-c1-21] trained 50 epochs, 1 checkpoints
+04:50:18 [INFO] [LOO-c1-21] trained 50 epochs, 1 checkpoints
+04:50:20 [INFO] [LOO-c1-21] trained 50 epochs, 1 checkpoints
+04:50:22 [INFO] [LOO-c1-22] trained 50 epochs, 1 checkpoints
+04:50:23 [INFO] [LOO-c1-22] trained 50 epochs, 1 checkpoints
+04:50:25 [INFO] [LOO-c1-22] trained 50 epochs, 1 checkpoints
+04:50:27 [INFO] [LOO-c1-22] trained 50 epochs, 1 checkpoints
+04:50:29 [INFO] [LOO-c1-22] trained 50 epochs, 1 checkpoints
+04:50:31 [INFO] [LOO-c1-23] trained 50 epochs, 1 checkpoints
+04:50:32 [INFO] [LOO-c1-23] trained 50 epochs, 1 checkpoints
+04:50:34 [INFO] [LOO-c1-23] trained 50 epochs, 1 checkpoints
+04:50:36 [INFO] [LOO-c1-23] trained 50 epochs, 1 checkpoints
+04:50:38 [INFO] [LOO-c1-23] trained 50 epochs, 1 checkpoints
+04:50:40 [INFO] [LOO-c1-24] trained 50 epochs, 1 checkpoints
+04:50:41 [INFO] [LOO-c1-24] trained 50 epochs, 1 checkpoints
+04:50:43 [INFO] [LOO-c1-24] trained 50 epochs, 1 checkpoints
+04:50:45 [INFO] [LOO-c1-24] trained 50 epochs, 1 checkpoints
+04:50:47 [INFO] [LOO-c1-24] trained 50 epochs, 1 checkpoints
+04:50:49 [INFO] [LOO-c1-25] trained 50 epochs, 1 checkpoints
+04:50:50 [INFO] [LOO-c1-25] trained 50 epochs, 1 checkpoints
+04:50:52 [INFO] [LOO-c1-25] trained 50 epochs, 1 checkpoints
+04:50:54 [INFO] [LOO-c1-25] trained 50 epochs, 1 checkpoints
+04:50:56 [INFO] [LOO-c1-25] trained 50 epochs, 1 checkpoints
+04:50:58 [INFO] [LOO-c1-26] trained 50 epochs, 1 checkpoints
+04:50:59 [INFO] [LOO-c1-26] trained 50 epochs, 1 checkpoints
+04:51:01 [INFO] [LOO-c1-26] trained 50 epochs, 1 checkpoints
+04:51:03 [INFO] [LOO-c1-26] trained 50 epochs, 1 checkpoints
+04:51:05 [INFO] [LOO-c1-26] trained 50 epochs, 1 checkpoints
+04:51:07 [INFO] [LOO-c1-27] trained 50 epochs, 1 checkpoints
+04:51:08 [INFO] [LOO-c1-27] trained 50 epochs, 1 checkpoints
+04:51:10 [INFO] [LOO-c1-27] trained 50 epochs, 1 checkpoints
+04:51:12 [INFO] [LOO-c1-27] trained 50 epochs, 1 checkpoints
+04:51:14 [INFO] [LOO-c1-27] trained 50 epochs, 1 checkpoints
+04:51:16 [INFO] [LOO-c1-28] trained 50 epochs, 1 checkpoints
+04:51:17 [INFO] [LOO-c1-28] trained 50 epochs, 1 checkpoints
+04:51:19 [INFO] [LOO-c1-28] trained 50 epochs, 1 checkpoints
+04:51:21 [INFO] [LOO-c1-28] trained 50 epochs, 1 checkpoints
+04:51:23 [INFO] [LOO-c1-28] trained 50 epochs, 1 checkpoints
+04:51:25 [INFO] [LOO-c1-29] trained 50 epochs, 1 checkpoints
+04:51:26 [INFO] [LOO-c1-29] trained 50 epochs, 1 checkpoints
+04:51:28 [INFO] [LOO-c1-29] trained 50 epochs, 1 checkpoints
+04:51:30 [INFO] [LOO-c1-29] trained 50 epochs, 1 checkpoints
+04:51:32 [INFO] [LOO-c1-29] trained 50 epochs, 1 checkpoints
+04:51:32 [INFO]     LOO 30/50: Δloss=+0.007999
+04:51:34 [INFO] [LOO-c1-30] trained 50 epochs, 1 checkpoints
+04:51:35 [INFO] [LOO-c1-30] trained 50 epochs, 1 checkpoints
+04:51:37 [INFO] [LOO-c1-30] trained 50 epochs, 1 checkpoints
+04:51:39 [INFO] [LOO-c1-30] trained 50 epochs, 1 checkpoints
+04:51:41 [INFO] [LOO-c1-30] trained 50 epochs, 1 checkpoints
+04:51:43 [INFO] [LOO-c1-31] trained 50 epochs, 1 checkpoints
+04:51:44 [INFO] [LOO-c1-31] trained 50 epochs, 1 checkpoints
+04:51:46 [INFO] [LOO-c1-31] trained 50 epochs, 1 checkpoints
+04:51:48 [INFO] [LOO-c1-31] trained 50 epochs, 1 checkpoints
+04:51:50 [INFO] [LOO-c1-31] trained 50 epochs, 1 checkpoints
+04:51:51 [INFO] [LOO-c1-32] trained 50 epochs, 1 checkpoints
+04:51:53 [INFO] [LOO-c1-32] trained 50 epochs, 1 checkpoints
+04:51:55 [INFO] [LOO-c1-32] trained 50 epochs, 1 checkpoints
+04:51:57 [INFO] [LOO-c1-32] trained 50 epochs, 1 checkpoints
+04:51:59 [INFO] [LOO-c1-32] trained 50 epochs, 1 checkpoints
+04:52:00 [INFO] [LOO-c1-33] trained 50 epochs, 1 checkpoints
+04:52:02 [INFO] [LOO-c1-33] trained 50 epochs, 1 checkpoints
+04:52:04 [INFO] [LOO-c1-33] trained 50 epochs, 1 checkpoints
+04:52:06 [INFO] [LOO-c1-33] trained 50 epochs, 1 checkpoints
+04:52:08 [INFO] [LOO-c1-33] trained 50 epochs, 1 checkpoints
+04:52:09 [INFO] [LOO-c1-34] trained 50 epochs, 1 checkpoints
+04:52:11 [INFO] [LOO-c1-34] trained 50 epochs, 1 checkpoints
+04:52:13 [INFO] [LOO-c1-34] trained 50 epochs, 1 checkpoints
+04:52:15 [INFO] [LOO-c1-34] trained 50 epochs, 1 checkpoints
+04:52:16 [INFO] [LOO-c1-34] trained 50 epochs, 1 checkpoints
+04:52:18 [INFO] [LOO-c1-35] trained 50 epochs, 1 checkpoints
+04:52:20 [INFO] [LOO-c1-35] trained 50 epochs, 1 checkpoints
+04:52:22 [INFO] [LOO-c1-35] trained 50 epochs, 1 checkpoints
+04:52:24 [INFO] [LOO-c1-35] trained 50 epochs, 1 checkpoints
+04:52:25 [INFO] [LOO-c1-35] trained 50 epochs, 1 checkpoints
+04:52:27 [INFO] [LOO-c1-36] trained 50 epochs, 1 checkpoints
+04:52:29 [INFO] [LOO-c1-36] trained 50 epochs, 1 checkpoints
+04:52:31 [INFO] [LOO-c1-36] trained 50 epochs, 1 checkpoints
+04:52:33 [INFO] [LOO-c1-36] trained 50 epochs, 1 checkpoints
+04:52:34 [INFO] [LOO-c1-36] trained 50 epochs, 1 checkpoints
+04:52:36 [INFO] [LOO-c1-37] trained 50 epochs, 1 checkpoints
+04:52:38 [INFO] [LOO-c1-37] trained 50 epochs, 1 checkpoints
+04:52:40 [INFO] [LOO-c1-37] trained 50 epochs, 1 checkpoints
+04:52:41 [INFO] [LOO-c1-37] trained 50 epochs, 1 checkpoints
+04:52:43 [INFO] [LOO-c1-37] trained 50 epochs, 1 checkpoints
+04:52:45 [INFO] [LOO-c1-38] trained 50 epochs, 1 checkpoints
+04:52:47 [INFO] [LOO-c1-38] trained 50 epochs, 1 checkpoints
+04:52:49 [INFO] [LOO-c1-38] trained 50 epochs, 1 checkpoints
+04:52:50 [INFO] [LOO-c1-38] trained 50 epochs, 1 checkpoints
+04:52:52 [INFO] [LOO-c1-38] trained 50 epochs, 1 checkpoints
+04:52:54 [INFO] [LOO-c1-39] trained 50 epochs, 1 checkpoints
+04:52:56 [INFO] [LOO-c1-39] trained 50 epochs, 1 checkpoints
+04:52:58 [INFO] [LOO-c1-39] trained 50 epochs, 1 checkpoints
+04:52:59 [INFO] [LOO-c1-39] trained 50 epochs, 1 checkpoints
+04:53:01 [INFO] [LOO-c1-39] trained 50 epochs, 1 checkpoints
+04:53:01 [INFO]     LOO 40/50: Δloss=+0.005144
+04:53:03 [INFO] [LOO-c1-40] trained 50 epochs, 1 checkpoints
+04:53:05 [INFO] [LOO-c1-40] trained 50 epochs, 1 checkpoints
+04:53:07 [INFO] [LOO-c1-40] trained 50 epochs, 1 checkpoints
+04:53:08 [INFO] [LOO-c1-40] trained 50 epochs, 1 checkpoints
+04:53:10 [INFO] [LOO-c1-40] trained 50 epochs, 1 checkpoints
+04:53:12 [INFO] [LOO-c1-41] trained 50 epochs, 1 checkpoints
+04:53:14 [INFO] [LOO-c1-41] trained 50 epochs, 1 checkpoints
+04:53:16 [INFO] [LOO-c1-41] trained 50 epochs, 1 checkpoints
+04:53:17 [INFO] [LOO-c1-41] trained 50 epochs, 1 checkpoints
+04:53:19 [INFO] [LOO-c1-41] trained 50 epochs, 1 checkpoints
+04:53:21 [INFO] [LOO-c1-42] trained 50 epochs, 1 checkpoints
+04:53:23 [INFO] [LOO-c1-42] trained 50 epochs, 1 checkpoints
+04:53:25 [INFO] [LOO-c1-42] trained 50 epochs, 1 checkpoints
+04:53:26 [INFO] [LOO-c1-42] trained 50 epochs, 1 checkpoints
+04:53:28 [INFO] [LOO-c1-42] trained 50 epochs, 1 checkpoints
+04:53:30 [INFO] [LOO-c1-43] trained 50 epochs, 1 checkpoints
+04:53:32 [INFO] [LOO-c1-43] trained 50 epochs, 1 checkpoints
+04:53:33 [INFO] [LOO-c1-43] trained 50 epochs, 1 checkpoints
+04:53:35 [INFO] [LOO-c1-43] trained 50 epochs, 1 checkpoints
+04:53:37 [INFO] [LOO-c1-43] trained 50 epochs, 1 checkpoints
+04:53:39 [INFO] [LOO-c1-44] trained 50 epochs, 1 checkpoints
+04:53:41 [INFO] [LOO-c1-44] trained 50 epochs, 1 checkpoints
+04:53:42 [INFO] [LOO-c1-44] trained 50 epochs, 1 checkpoints
+04:53:44 [INFO] [LOO-c1-44] trained 50 epochs, 1 checkpoints
+04:53:46 [INFO] [LOO-c1-44] trained 50 epochs, 1 checkpoints
+04:53:48 [INFO] [LOO-c1-45] trained 50 epochs, 1 checkpoints
+04:53:50 [INFO] [LOO-c1-45] trained 50 epochs, 1 checkpoints
+04:53:51 [INFO] [LOO-c1-45] trained 50 epochs, 1 checkpoints
+04:53:53 [INFO] [LOO-c1-45] trained 50 epochs, 1 checkpoints
+04:53:55 [INFO] [LOO-c1-45] trained 50 epochs, 1 checkpoints
+04:53:57 [INFO] [LOO-c1-46] trained 50 epochs, 1 checkpoints
+04:53:59 [INFO] [LOO-c1-46] trained 50 epochs, 1 checkpoints
+04:54:00 [INFO] [LOO-c1-46] trained 50 epochs, 1 checkpoints
+04:54:02 [INFO] [LOO-c1-46] trained 50 epochs, 1 checkpoints
+04:54:04 [INFO] [LOO-c1-46] trained 50 epochs, 1 checkpoints
+04:54:06 [INFO] [LOO-c1-47] trained 50 epochs, 1 checkpoints
+04:54:07 [INFO] [LOO-c1-47] trained 50 epochs, 1 checkpoints
+04:54:09 [INFO] [LOO-c1-47] trained 50 epochs, 1 checkpoints
+04:54:11 [INFO] [LOO-c1-47] trained 50 epochs, 1 checkpoints
+04:54:13 [INFO] [LOO-c1-47] trained 50 epochs, 1 checkpoints
+04:54:15 [INFO] [LOO-c1-48] trained 50 epochs, 1 checkpoints
+04:54:16 [INFO] [LOO-c1-48] trained 50 epochs, 1 checkpoints
+04:54:18 [INFO] [LOO-c1-48] trained 50 epochs, 1 checkpoints
+04:54:20 [INFO] [LOO-c1-48] trained 50 epochs, 1 checkpoints
+04:54:22 [INFO] [LOO-c1-48] trained 50 epochs, 1 checkpoints
+04:54:24 [INFO] [LOO-c1-49] trained 50 epochs, 1 checkpoints
+04:54:25 [INFO] [LOO-c1-49] trained 50 epochs, 1 checkpoints
+04:54:27 [INFO] [LOO-c1-49] trained 50 epochs, 1 checkpoints
+04:54:29 [INFO] [LOO-c1-49] trained 50 epochs, 1 checkpoints
+04:54:31 [INFO] [LOO-c1-49] trained 50 epochs, 1 checkpoints
+04:54:31 [INFO]     LOO 50/50: Δloss=+0.009535
+04:54:31 [INFO]   Spearman r=0.0551 (p=0.7041), Pearson r=-0.0043 (p=0.9762)
+04:54:31 [INFO]   --- Part B: Leave-K-Out ---
+04:54:32 [INFO] [LKO-c1-top-10 proponents] trained 50 epochs, 1 checkpoints
+04:54:34 [INFO] [LKO-c1-top-10 proponents] trained 50 epochs, 1 checkpoints
+04:54:36 [INFO] [LKO-c1-top-10 proponents] trained 50 epochs, 1 checkpoints
+04:54:38 [INFO] [LKO-c1-top-10 proponents] trained 50 epochs, 1 checkpoints
+04:54:40 [INFO] [LKO-c1-top-10 proponents] trained 50 epochs, 1 checkpoints
+04:54:40 [INFO]     top-10 proponents: Δloss=+0.039402 ↑
+04:54:41 [INFO] [LKO-c1-bottom-10 opponents] trained 50 epochs, 1 checkpoints
+04:54:43 [INFO] [LKO-c1-bottom-10 opponents] trained 50 epochs, 1 checkpoints
+04:54:45 [INFO] [LKO-c1-bottom-10 opponents] trained 50 epochs, 1 checkpoints
+04:54:47 [INFO] [LKO-c1-bottom-10 opponents] trained 50 epochs, 1 checkpoints
+04:54:49 [INFO] [LKO-c1-bottom-10 opponents] trained 50 epochs, 1 checkpoints
+04:54:49 [INFO]     bottom-10 opponents: Δloss=+0.030726 ↑
+04:54:50 [INFO] [LKO-c1-top-20 proponents] trained 50 epochs, 1 checkpoints
+04:54:52 [INFO] [LKO-c1-top-20 proponents] trained 50 epochs, 1 checkpoints
+04:54:54 [INFO] [LKO-c1-top-20 proponents] trained 50 epochs, 1 checkpoints
+04:54:56 [INFO] [LKO-c1-top-20 proponents] trained 50 epochs, 1 checkpoints
+04:54:57 [INFO] [LKO-c1-top-20 proponents] trained 50 epochs, 1 checkpoints
+04:54:57 [INFO]     top-20 proponents: Δloss=+0.025170 ↑
+04:54:59 [INFO] [LKO-c1-bottom-20 opponents] trained 50 epochs, 1 checkpoints
+04:55:01 [INFO] [LKO-c1-bottom-20 opponents] trained 50 epochs, 1 checkpoints
+04:55:03 [INFO] [LKO-c1-bottom-20 opponents] trained 50 epochs, 1 checkpoints
+04:55:04 [INFO] [LKO-c1-bottom-20 opponents] trained 50 epochs, 1 checkpoints
+04:55:06 [INFO] [LKO-c1-bottom-20 opponents] trained 50 epochs, 1 checkpoints
+04:55:06 [INFO]     bottom-20 opponents: Δloss=+0.021263 ↑
+04:55:08 [INFO] [LKO-c1-top-50 proponents] trained 50 epochs, 1 checkpoints
+04:55:10 [INFO] [LKO-c1-top-50 proponents] trained 50 epochs, 1 checkpoints
+04:55:11 [INFO] [LKO-c1-top-50 proponents] trained 50 epochs, 1 checkpoints
+04:55:13 [INFO] [LKO-c1-top-50 proponents] trained 50 epochs, 1 checkpoints
+04:55:15 [INFO] [LKO-c1-top-50 proponents] trained 50 epochs, 1 checkpoints
+04:55:15 [INFO]     top-50 proponents: Δloss=+0.045849 ↑
+04:55:17 [INFO] [LKO-c1-bottom-50 opponents] trained 50 epochs, 1 checkpoints
+04:55:18 [INFO] [LKO-c1-bottom-50 opponents] trained 50 epochs, 1 checkpoints
+04:55:20 [INFO] [LKO-c1-bottom-50 opponents] trained 50 epochs, 1 checkpoints
+04:55:22 [INFO] [LKO-c1-bottom-50 opponents] trained 50 epochs, 1 checkpoints
+04:55:24 [INFO] [LKO-c1-bottom-50 opponents] trained 50 epochs, 1 checkpoints
+04:55:24 [INFO]     bottom-50 opponents: Δloss=-0.009418 ↓
+04:55:24 [INFO]   Class 1 done in 509.5s
+04:55:24 [INFO] 
+======================================================================
+  CLASS 2 (DRUSEN)
+======================================================================
+04:55:24 [INFO]   --- Part A: Single-point LOO (50 pts × 5 seeds) ---
+04:55:25 [INFO] [BL-c2-s42] trained 50 epochs, 1 checkpoints
+04:55:26 [INFO] [BL-c2-s43] trained 50 epochs, 1 checkpoints
+04:55:27 [INFO] [BL-c2-s44] trained 50 epochs, 1 checkpoints
+04:55:29 [INFO] [BL-c2-s45] trained 50 epochs, 1 checkpoints
+04:55:30 [INFO] [BL-c2-s46] trained 50 epochs, 1 checkpoints
+04:55:30 [INFO]   Baseline loss: 0.191121 ± 0.025225
+04:55:31 [INFO] [LOO-c2-0] trained 50 epochs, 1 checkpoints
+04:55:32 [INFO] [LOO-c2-0] trained 50 epochs, 1 checkpoints
+04:55:33 [INFO] [LOO-c2-0] trained 50 epochs, 1 checkpoints
+04:55:34 [INFO] [LOO-c2-0] trained 50 epochs, 1 checkpoints
+04:55:36 [INFO] [LOO-c2-0] trained 50 epochs, 1 checkpoints
+04:55:37 [INFO] [LOO-c2-1] trained 50 epochs, 1 checkpoints
+04:55:38 [INFO] [LOO-c2-1] trained 50 epochs, 1 checkpoints
+04:55:39 [INFO] [LOO-c2-1] trained 50 epochs, 1 checkpoints
+04:55:40 [INFO] [LOO-c2-1] trained 50 epochs, 1 checkpoints
+04:55:41 [INFO] [LOO-c2-1] trained 50 epochs, 1 checkpoints
+04:55:42 [INFO] [LOO-c2-2] trained 50 epochs, 1 checkpoints
+04:55:44 [INFO] [LOO-c2-2] trained 50 epochs, 1 checkpoints
+04:55:45 [INFO] [LOO-c2-2] trained 50 epochs, 1 checkpoints
+04:55:46 [INFO] [LOO-c2-2] trained 50 epochs, 1 checkpoints
+04:55:47 [INFO] [LOO-c2-2] trained 50 epochs, 1 checkpoints
+04:55:48 [INFO] [LOO-c2-3] trained 50 epochs, 1 checkpoints
+04:55:49 [INFO] [LOO-c2-3] trained 50 epochs, 1 checkpoints
+04:55:51 [INFO] [LOO-c2-3] trained 50 epochs, 1 checkpoints
+04:55:52 [INFO] [LOO-c2-3] trained 50 epochs, 1 checkpoints
+04:55:53 [INFO] [LOO-c2-3] trained 50 epochs, 1 checkpoints
+04:55:54 [INFO] [LOO-c2-4] trained 50 epochs, 1 checkpoints
+04:55:55 [INFO] [LOO-c2-4] trained 50 epochs, 1 checkpoints
+04:55:56 [INFO] [LOO-c2-4] trained 50 epochs, 1 checkpoints
+04:55:58 [INFO] [LOO-c2-4] trained 50 epochs, 1 checkpoints
+04:55:59 [INFO] [LOO-c2-4] trained 50 epochs, 1 checkpoints
+04:56:00 [INFO] [LOO-c2-5] trained 50 epochs, 1 checkpoints
+04:56:01 [INFO] [LOO-c2-5] trained 50 epochs, 1 checkpoints
+04:56:02 [INFO] [LOO-c2-5] trained 50 epochs, 1 checkpoints
+04:56:03 [INFO] [LOO-c2-5] trained 50 epochs, 1 checkpoints
+04:56:04 [INFO] [LOO-c2-5] trained 50 epochs, 1 checkpoints
+04:56:06 [INFO] [LOO-c2-6] trained 50 epochs, 1 checkpoints
+04:56:07 [INFO] [LOO-c2-6] trained 50 epochs, 1 checkpoints
+04:56:08 [INFO] [LOO-c2-6] trained 50 epochs, 1 checkpoints
+04:56:09 [INFO] [LOO-c2-6] trained 50 epochs, 1 checkpoints
+04:56:10 [INFO] [LOO-c2-6] trained 50 epochs, 1 checkpoints
+04:56:11 [INFO] [LOO-c2-7] trained 50 epochs, 1 checkpoints
+04:56:13 [INFO] [LOO-c2-7] trained 50 epochs, 1 checkpoints
+04:56:14 [INFO] [LOO-c2-7] trained 50 epochs, 1 checkpoints
+04:56:15 [INFO] [LOO-c2-7] trained 50 epochs, 1 checkpoints
+04:56:16 [INFO] [LOO-c2-7] trained 50 epochs, 1 checkpoints
+04:56:17 [INFO] [LOO-c2-8] trained 50 epochs, 1 checkpoints
+04:56:18 [INFO] [LOO-c2-8] trained 50 epochs, 1 checkpoints
+04:56:20 [INFO] [LOO-c2-8] trained 50 epochs, 1 checkpoints
+04:56:21 [INFO] [LOO-c2-8] trained 50 epochs, 1 checkpoints
+04:56:22 [INFO] [LOO-c2-8] trained 50 epochs, 1 checkpoints
+04:56:23 [INFO] [LOO-c2-9] trained 50 epochs, 1 checkpoints
+04:56:24 [INFO] [LOO-c2-9] trained 50 epochs, 1 checkpoints
+04:56:25 [INFO] [LOO-c2-9] trained 50 epochs, 1 checkpoints
+04:56:26 [INFO] [LOO-c2-9] trained 50 epochs, 1 checkpoints
+04:56:28 [INFO] [LOO-c2-9] trained 50 epochs, 1 checkpoints
+04:56:28 [INFO]     LOO 10/50: Δloss=-0.030684
+04:56:29 [INFO] [LOO-c2-10] trained 50 epochs, 1 checkpoints
+04:56:30 [INFO] [LOO-c2-10] trained 50 epochs, 1 checkpoints
+04:56:31 [INFO] [LOO-c2-10] trained 50 epochs, 1 checkpoints
+04:56:32 [INFO] [LOO-c2-10] trained 50 epochs, 1 checkpoints
+04:56:33 [INFO] [LOO-c2-10] trained 50 epochs, 1 checkpoints
+04:56:35 [INFO] [LOO-c2-11] trained 50 epochs, 1 checkpoints
+04:56:36 [INFO] [LOO-c2-11] trained 50 epochs, 1 checkpoints
+04:56:37 [INFO] [LOO-c2-11] trained 50 epochs, 1 checkpoints
+04:56:38 [INFO] [LOO-c2-11] trained 50 epochs, 1 checkpoints
+04:56:39 [INFO] [LOO-c2-11] trained 50 epochs, 1 checkpoints
+04:56:40 [INFO] [LOO-c2-12] trained 50 epochs, 1 checkpoints
+04:56:41 [INFO] [LOO-c2-12] trained 50 epochs, 1 checkpoints
+04:56:43 [INFO] [LOO-c2-12] trained 50 epochs, 1 checkpoints
+04:56:44 [INFO] [LOO-c2-12] trained 50 epochs, 1 checkpoints
+04:56:45 [INFO] [LOO-c2-12] trained 50 epochs, 1 checkpoints
+04:56:46 [INFO] [LOO-c2-13] trained 50 epochs, 1 checkpoints
+04:56:47 [INFO] [LOO-c2-13] trained 50 epochs, 1 checkpoints
+04:56:48 [INFO] [LOO-c2-13] trained 50 epochs, 1 checkpoints
+04:56:50 [INFO] [LOO-c2-13] trained 50 epochs, 1 checkpoints
+04:56:51 [INFO] [LOO-c2-13] trained 50 epochs, 1 checkpoints
+04:56:52 [INFO] [LOO-c2-14] trained 50 epochs, 1 checkpoints
+04:56:53 [INFO] [LOO-c2-14] trained 50 epochs, 1 checkpoints
+04:56:54 [INFO] [LOO-c2-14] trained 50 epochs, 1 checkpoints
+04:56:55 [INFO] [LOO-c2-14] trained 50 epochs, 1 checkpoints
+04:56:57 [INFO] [LOO-c2-14] trained 50 epochs, 1 checkpoints
+04:56:58 [INFO] [LOO-c2-15] trained 50 epochs, 1 checkpoints
+04:56:59 [INFO] [LOO-c2-15] trained 50 epochs, 1 checkpoints
+04:57:00 [INFO] [LOO-c2-15] trained 50 epochs, 1 checkpoints
+04:57:01 [INFO] [LOO-c2-15] trained 50 epochs, 1 checkpoints
+04:57:02 [INFO] [LOO-c2-15] trained 50 epochs, 1 checkpoints
+04:57:03 [INFO] [LOO-c2-16] trained 50 epochs, 1 checkpoints
+04:57:05 [INFO] [LOO-c2-16] trained 50 epochs, 1 checkpoints
+04:57:06 [INFO] [LOO-c2-16] trained 50 epochs, 1 checkpoints
+04:57:07 [INFO] [LOO-c2-16] trained 50 epochs, 1 checkpoints
+04:57:08 [INFO] [LOO-c2-16] trained 50 epochs, 1 checkpoints
+04:57:09 [INFO] [LOO-c2-17] trained 50 epochs, 1 checkpoints
+04:57:10 [INFO] [LOO-c2-17] trained 50 epochs, 1 checkpoints
+04:57:12 [INFO] [LOO-c2-17] trained 50 epochs, 1 checkpoints
+04:57:13 [INFO] [LOO-c2-17] trained 50 epochs, 1 checkpoints
+04:57:14 [INFO] [LOO-c2-17] trained 50 epochs, 1 checkpoints
+04:57:15 [INFO] [LOO-c2-18] trained 50 epochs, 1 checkpoints
+04:57:16 [INFO] [LOO-c2-18] trained 50 epochs, 1 checkpoints
+04:57:17 [INFO] [LOO-c2-18] trained 50 epochs, 1 checkpoints
+04:57:19 [INFO] [LOO-c2-18] trained 50 epochs, 1 checkpoints
+04:57:20 [INFO] [LOO-c2-18] trained 50 epochs, 1 checkpoints
+04:57:21 [INFO] [LOO-c2-19] trained 50 epochs, 1 checkpoints
+04:57:22 [INFO] [LOO-c2-19] trained 50 epochs, 1 checkpoints
+04:57:23 [INFO] [LOO-c2-19] trained 50 epochs, 1 checkpoints
+04:57:24 [INFO] [LOO-c2-19] trained 50 epochs, 1 checkpoints
+04:57:26 [INFO] [LOO-c2-19] trained 50 epochs, 1 checkpoints
+04:57:26 [INFO]     LOO 20/50: Δloss=-0.028521
+04:57:27 [INFO] [LOO-c2-20] trained 50 epochs, 1 checkpoints
+04:57:28 [INFO] [LOO-c2-20] trained 50 epochs, 1 checkpoints
+04:57:29 [INFO] [LOO-c2-20] trained 50 epochs, 1 checkpoints
+04:57:30 [INFO] [LOO-c2-20] trained 50 epochs, 1 checkpoints
+04:57:31 [INFO] [LOO-c2-20] trained 50 epochs, 1 checkpoints
+04:57:32 [INFO] [LOO-c2-21] trained 50 epochs, 1 checkpoints
+04:57:34 [INFO] [LOO-c2-21] trained 50 epochs, 1 checkpoints
+04:57:35 [INFO] [LOO-c2-21] trained 50 epochs, 1 checkpoints
+04:57:36 [INFO] [LOO-c2-21] trained 50 epochs, 1 checkpoints
+04:57:37 [INFO] [LOO-c2-21] trained 50 epochs, 1 checkpoints
+04:57:38 [INFO] [LOO-c2-22] trained 50 epochs, 1 checkpoints
+04:57:39 [INFO] [LOO-c2-22] trained 50 epochs, 1 checkpoints
+04:57:41 [INFO] [LOO-c2-22] trained 50 epochs, 1 checkpoints
+04:57:42 [INFO] [LOO-c2-22] trained 50 epochs, 1 checkpoints
+04:57:43 [INFO] [LOO-c2-22] trained 50 epochs, 1 checkpoints
+04:57:44 [INFO] [LOO-c2-23] trained 50 epochs, 1 checkpoints
+04:57:45 [INFO] [LOO-c2-23] trained 50 epochs, 1 checkpoints
+04:57:46 [INFO] [LOO-c2-23] trained 50 epochs, 1 checkpoints
+04:57:47 [INFO] [LOO-c2-23] trained 50 epochs, 1 checkpoints
+04:57:49 [INFO] [LOO-c2-23] trained 50 epochs, 1 checkpoints
+04:57:50 [INFO] [LOO-c2-24] trained 50 epochs, 1 checkpoints
+04:57:51 [INFO] [LOO-c2-24] trained 50 epochs, 1 checkpoints
+04:57:52 [INFO] [LOO-c2-24] trained 50 epochs, 1 checkpoints
+04:57:53 [INFO] [LOO-c2-24] trained 50 epochs, 1 checkpoints
+04:57:54 [INFO] [LOO-c2-24] trained 50 epochs, 1 checkpoints
+04:57:56 [INFO] [LOO-c2-25] trained 50 epochs, 1 checkpoints
+04:57:57 [INFO] [LOO-c2-25] trained 50 epochs, 1 checkpoints
+04:57:58 [INFO] [LOO-c2-25] trained 50 epochs, 1 checkpoints
+04:57:59 [INFO] [LOO-c2-25] trained 50 epochs, 1 checkpoints
+04:58:00 [INFO] [LOO-c2-25] trained 50 epochs, 1 checkpoints
+04:58:01 [INFO] [LOO-c2-26] trained 50 epochs, 1 checkpoints
+04:58:02 [INFO] [LOO-c2-26] trained 50 epochs, 1 checkpoints
+04:58:04 [INFO] [LOO-c2-26] trained 50 epochs, 1 checkpoints
+04:58:05 [INFO] [LOO-c2-26] trained 50 epochs, 1 checkpoints
+04:58:06 [INFO] [LOO-c2-26] trained 50 epochs, 1 checkpoints
+04:58:07 [INFO] [LOO-c2-27] trained 50 epochs, 1 checkpoints
+04:58:08 [INFO] [LOO-c2-27] trained 50 epochs, 1 checkpoints
+04:58:09 [INFO] [LOO-c2-27] trained 50 epochs, 1 checkpoints
+04:58:11 [INFO] [LOO-c2-27] trained 50 epochs, 1 checkpoints
+04:58:12 [INFO] [LOO-c2-27] trained 50 epochs, 1 checkpoints
+04:58:13 [INFO] [LOO-c2-28] trained 50 epochs, 1 checkpoints
+04:58:14 [INFO] [LOO-c2-28] trained 50 epochs, 1 checkpoints
+04:58:15 [INFO] [LOO-c2-28] trained 50 epochs, 1 checkpoints
+04:58:16 [INFO] [LOO-c2-28] trained 50 epochs, 1 checkpoints
+04:58:17 [INFO] [LOO-c2-28] trained 50 epochs, 1 checkpoints
+04:58:19 [INFO] [LOO-c2-29] trained 50 epochs, 1 checkpoints
+04:58:20 [INFO] [LOO-c2-29] trained 50 epochs, 1 checkpoints
+04:58:21 [INFO] [LOO-c2-29] trained 50 epochs, 1 checkpoints
+04:58:22 [INFO] [LOO-c2-29] trained 50 epochs, 1 checkpoints
+04:58:23 [INFO] [LOO-c2-29] trained 50 epochs, 1 checkpoints
+04:58:23 [INFO]     LOO 30/50: Δloss=-0.024385
+04:58:24 [INFO] [LOO-c2-30] trained 50 epochs, 1 checkpoints
+04:58:26 [INFO] [LOO-c2-30] trained 50 epochs, 1 checkpoints
+04:58:27 [INFO] [LOO-c2-30] trained 50 epochs, 1 checkpoints
+04:58:28 [INFO] [LOO-c2-30] trained 50 epochs, 1 checkpoints
+04:58:29 [INFO] [LOO-c2-30] trained 50 epochs, 1 checkpoints
+04:58:30 [INFO] [LOO-c2-31] trained 50 epochs, 1 checkpoints
+04:58:31 [INFO] [LOO-c2-31] trained 50 epochs, 1 checkpoints
+04:58:33 [INFO] [LOO-c2-31] trained 50 epochs, 1 checkpoints
+04:58:34 [INFO] [LOO-c2-31] trained 50 epochs, 1 checkpoints
+04:58:35 [INFO] [LOO-c2-31] trained 50 epochs, 1 checkpoints
+04:58:36 [INFO] [LOO-c2-32] trained 50 epochs, 1 checkpoints
+04:58:37 [INFO] [LOO-c2-32] trained 50 epochs, 1 checkpoints
+04:58:38 [INFO] [LOO-c2-32] trained 50 epochs, 1 checkpoints
+04:58:40 [INFO] [LOO-c2-32] trained 50 epochs, 1 checkpoints
+04:58:41 [INFO] [LOO-c2-32] trained 50 epochs, 1 checkpoints
+04:58:42 [INFO] [LOO-c2-33] trained 50 epochs, 1 checkpoints
+04:58:43 [INFO] [LOO-c2-33] trained 50 epochs, 1 checkpoints
+04:58:44 [INFO] [LOO-c2-33] trained 50 epochs, 1 checkpoints
+04:58:45 [INFO] [LOO-c2-33] trained 50 epochs, 1 checkpoints
+04:58:46 [INFO] [LOO-c2-33] trained 50 epochs, 1 checkpoints
+04:58:48 [INFO] [LOO-c2-34] trained 50 epochs, 1 checkpoints
+04:58:49 [INFO] [LOO-c2-34] trained 50 epochs, 1 checkpoints
+04:58:50 [INFO] [LOO-c2-34] trained 50 epochs, 1 checkpoints
+04:58:51 [INFO] [LOO-c2-34] trained 50 epochs, 1 checkpoints
+04:58:52 [INFO] [LOO-c2-34] trained 50 epochs, 1 checkpoints
+04:58:53 [INFO] [LOO-c2-35] trained 50 epochs, 1 checkpoints
+04:58:55 [INFO] [LOO-c2-35] trained 50 epochs, 1 checkpoints
+04:58:56 [INFO] [LOO-c2-35] trained 50 epochs, 1 checkpoints
+04:58:57 [INFO] [LOO-c2-35] trained 50 epochs, 1 checkpoints
+04:58:58 [INFO] [LOO-c2-35] trained 50 epochs, 1 checkpoints
+04:58:59 [INFO] [LOO-c2-36] trained 50 epochs, 1 checkpoints
+04:59:00 [INFO] [LOO-c2-36] trained 50 epochs, 1 checkpoints
+04:59:01 [INFO] [LOO-c2-36] trained 50 epochs, 1 checkpoints
+04:59:03 [INFO] [LOO-c2-36] trained 50 epochs, 1 checkpoints
+04:59:04 [INFO] [LOO-c2-36] trained 50 epochs, 1 checkpoints
+04:59:05 [INFO] [LOO-c2-37] trained 50 epochs, 1 checkpoints
+04:59:06 [INFO] [LOO-c2-37] trained 50 epochs, 1 checkpoints
+04:59:07 [INFO] [LOO-c2-37] trained 50 epochs, 1 checkpoints
+04:59:08 [INFO] [LOO-c2-37] trained 50 epochs, 1 checkpoints
+04:59:09 [INFO] [LOO-c2-37] trained 50 epochs, 1 checkpoints
+04:59:11 [INFO] [LOO-c2-38] trained 50 epochs, 1 checkpoints
+04:59:12 [INFO] [LOO-c2-38] trained 50 epochs, 1 checkpoints
+04:59:13 [INFO] [LOO-c2-38] trained 50 epochs, 1 checkpoints
+04:59:14 [INFO] [LOO-c2-38] trained 50 epochs, 1 checkpoints
+04:59:15 [INFO] [LOO-c2-38] trained 50 epochs, 1 checkpoints
+04:59:16 [INFO] [LOO-c2-39] trained 50 epochs, 1 checkpoints
+04:59:18 [INFO] [LOO-c2-39] trained 50 epochs, 1 checkpoints
+04:59:19 [INFO] [LOO-c2-39] trained 50 epochs, 1 checkpoints
+04:59:20 [INFO] [LOO-c2-39] trained 50 epochs, 1 checkpoints
+04:59:21 [INFO] [LOO-c2-39] trained 50 epochs, 1 checkpoints
+04:59:21 [INFO]     LOO 40/50: Δloss=-0.020484
+04:59:22 [INFO] [LOO-c2-40] trained 50 epochs, 1 checkpoints
+04:59:23 [INFO] [LOO-c2-40] trained 50 epochs, 1 checkpoints
+04:59:24 [INFO] [LOO-c2-40] trained 50 epochs, 1 checkpoints
+04:59:26 [INFO] [LOO-c2-40] trained 50 epochs, 1 checkpoints
+04:59:27 [INFO] [LOO-c2-40] trained 50 epochs, 1 checkpoints
+04:59:28 [INFO] [LOO-c2-41] trained 50 epochs, 1 checkpoints
+04:59:29 [INFO] [LOO-c2-41] trained 50 epochs, 1 checkpoints
+04:59:30 [INFO] [LOO-c2-41] trained 50 epochs, 1 checkpoints
+04:59:31 [INFO] [LOO-c2-41] trained 50 epochs, 1 checkpoints
+04:59:33 [INFO] [LOO-c2-41] trained 50 epochs, 1 checkpoints
+04:59:34 [INFO] [LOO-c2-42] trained 50 epochs, 1 checkpoints
+04:59:35 [INFO] [LOO-c2-42] trained 50 epochs, 1 checkpoints
+04:59:36 [INFO] [LOO-c2-42] trained 50 epochs, 1 checkpoints
+04:59:37 [INFO] [LOO-c2-42] trained 50 epochs, 1 checkpoints
+04:59:38 [INFO] [LOO-c2-42] trained 50 epochs, 1 checkpoints
+04:59:40 [INFO] [LOO-c2-43] trained 50 epochs, 1 checkpoints
+04:59:41 [INFO] [LOO-c2-43] trained 50 epochs, 1 checkpoints
+04:59:42 [INFO] [LOO-c2-43] trained 50 epochs, 1 checkpoints
+04:59:43 [INFO] [LOO-c2-43] trained 50 epochs, 1 checkpoints
+04:59:44 [INFO] [LOO-c2-43] trained 50 epochs, 1 checkpoints
+04:59:45 [INFO] [LOO-c2-44] trained 50 epochs, 1 checkpoints
+04:59:46 [INFO] [LOO-c2-44] trained 50 epochs, 1 checkpoints
+04:59:48 [INFO] [LOO-c2-44] trained 50 epochs, 1 checkpoints
+04:59:49 [INFO] [LOO-c2-44] trained 50 epochs, 1 checkpoints
+04:59:50 [INFO] [LOO-c2-44] trained 50 epochs, 1 checkpoints
+04:59:51 [INFO] [LOO-c2-45] trained 50 epochs, 1 checkpoints
+04:59:52 [INFO] [LOO-c2-45] trained 50 epochs, 1 checkpoints
+04:59:53 [INFO] [LOO-c2-45] trained 50 epochs, 1 checkpoints
+04:59:55 [INFO] [LOO-c2-45] trained 50 epochs, 1 checkpoints
+04:59:56 [INFO] [LOO-c2-45] trained 50 epochs, 1 checkpoints
+04:59:57 [INFO] [LOO-c2-46] trained 50 epochs, 1 checkpoints
+04:59:58 [INFO] [LOO-c2-46] trained 50 epochs, 1 checkpoints
+04:59:59 [INFO] [LOO-c2-46] trained 50 epochs, 1 checkpoints
+05:00:00 [INFO] [LOO-c2-46] trained 50 epochs, 1 checkpoints
+05:00:02 [INFO] [LOO-c2-46] trained 50 epochs, 1 checkpoints
+05:00:03 [INFO] [LOO-c2-47] trained 50 epochs, 1 checkpoints
+05:00:04 [INFO] [LOO-c2-47] trained 50 epochs, 1 checkpoints
+05:00:05 [INFO] [LOO-c2-47] trained 50 epochs, 1 checkpoints
+05:00:06 [INFO] [LOO-c2-47] trained 50 epochs, 1 checkpoints
+05:00:07 [INFO] [LOO-c2-47] trained 50 epochs, 1 checkpoints
+05:00:08 [INFO] [LOO-c2-48] trained 50 epochs, 1 checkpoints
+05:00:10 [INFO] [LOO-c2-48] trained 50 epochs, 1 checkpoints
+05:00:11 [INFO] [LOO-c2-48] trained 50 epochs, 1 checkpoints
+05:00:12 [INFO] [LOO-c2-48] trained 50 epochs, 1 checkpoints
+05:00:13 [INFO] [LOO-c2-48] trained 50 epochs, 1 checkpoints
+05:00:14 [INFO] [LOO-c2-49] trained 50 epochs, 1 checkpoints
+05:00:15 [INFO] [LOO-c2-49] trained 50 epochs, 1 checkpoints
+05:00:17 [INFO] [LOO-c2-49] trained 50 epochs, 1 checkpoints
+05:00:18 [INFO] [LOO-c2-49] trained 50 epochs, 1 checkpoints
+05:00:19 [INFO] [LOO-c2-49] trained 50 epochs, 1 checkpoints
+05:00:19 [INFO]     LOO 50/50: Δloss=-0.023532
+05:00:19 [INFO]   Spearman r=0.1262 (p=0.3823), Pearson r=0.2581 (p=0.0703)
+05:00:19 [INFO]   --- Part B: Leave-K-Out ---
+05:00:20 [INFO] [LKO-c2-top-10 proponents] trained 50 epochs, 1 checkpoints
+05:00:21 [INFO] [LKO-c2-top-10 proponents] trained 50 epochs, 1 checkpoints
+05:00:22 [INFO] [LKO-c2-top-10 proponents] trained 50 epochs, 1 checkpoints
+05:00:23 [INFO] [LKO-c2-top-10 proponents] trained 50 epochs, 1 checkpoints
+05:00:25 [INFO] [LKO-c2-top-10 proponents] trained 50 epochs, 1 checkpoints
+05:00:25 [INFO]     top-10 proponents: Δloss=+0.016333 ↑
+05:00:26 [INFO] [LKO-c2-bottom-10 opponents] trained 50 epochs, 1 checkpoints
+05:00:27 [INFO] [LKO-c2-bottom-10 opponents] trained 50 epochs, 1 checkpoints
+05:00:28 [INFO] [LKO-c2-bottom-10 opponents] trained 50 epochs, 1 checkpoints
+05:00:29 [INFO] [LKO-c2-bottom-10 opponents] trained 50 epochs, 1 checkpoints
+05:00:30 [INFO] [LKO-c2-bottom-10 opponents] trained 50 epochs, 1 checkpoints
+05:00:30 [INFO]     bottom-10 opponents: Δloss=-0.028352 ↓
+05:00:32 [INFO] [LKO-c2-top-20 proponents] trained 50 epochs, 1 checkpoints
+05:00:33 [INFO] [LKO-c2-top-20 proponents] trained 50 epochs, 1 checkpoints
+05:00:34 [INFO] [LKO-c2-top-20 proponents] trained 50 epochs, 1 checkpoints
+05:00:35 [INFO] [LKO-c2-top-20 proponents] trained 50 epochs, 1 checkpoints
+05:00:36 [INFO] [LKO-c2-top-20 proponents] trained 50 epochs, 1 checkpoints
+05:00:36 [INFO]     top-20 proponents: Δloss=+0.091785 ↑
+05:00:37 [INFO] [LKO-c2-bottom-20 opponents] trained 50 epochs, 1 checkpoints
+05:00:38 [INFO] [LKO-c2-bottom-20 opponents] trained 50 epochs, 1 checkpoints
+05:00:40 [INFO] [LKO-c2-bottom-20 opponents] trained 50 epochs, 1 checkpoints
+05:00:41 [INFO] [LKO-c2-bottom-20 opponents] trained 50 epochs, 1 checkpoints
+05:00:42 [INFO] [LKO-c2-bottom-20 opponents] trained 50 epochs, 1 checkpoints
+05:00:42 [INFO]     bottom-20 opponents: Δloss=-0.035545 ↓
+05:00:43 [INFO] [LKO-c2-top-50 proponents] trained 50 epochs, 1 checkpoints
+05:00:44 [INFO] [LKO-c2-top-50 proponents] trained 50 epochs, 1 checkpoints
+05:00:45 [INFO] [LKO-c2-top-50 proponents] trained 50 epochs, 1 checkpoints
+05:00:46 [INFO] [LKO-c2-top-50 proponents] trained 50 epochs, 1 checkpoints
+05:00:48 [INFO] [LKO-c2-top-50 proponents] trained 50 epochs, 1 checkpoints
+05:00:48 [INFO]     top-50 proponents: Δloss=+0.194530 ↑
+05:00:49 [INFO] [LKO-c2-bottom-50 opponents] trained 50 epochs, 1 checkpoints
+05:00:50 [INFO] [LKO-c2-bottom-50 opponents] trained 50 epochs, 1 checkpoints
+05:00:51 [INFO] [LKO-c2-bottom-50 opponents] trained 50 epochs, 1 checkpoints
+05:00:52 [INFO] [LKO-c2-bottom-50 opponents] trained 50 epochs, 1 checkpoints
+05:00:53 [INFO] [LKO-c2-bottom-50 opponents] trained 50 epochs, 1 checkpoints
+05:00:53 [INFO]     bottom-50 opponents: Δloss=-0.063139 ↓
+05:00:53 [INFO]   Class 2 done in 329.3s
+05:00:54 [INFO] 
+======================================================================
+  CLASS 3 (NORMAL)
+======================================================================
+05:00:54 [INFO]   --- Part A: Single-point LOO (50 pts × 5 seeds) ---
+05:00:58 [INFO] [BL-c3-s42] trained 50 epochs, 1 checkpoints
+05:01:01 [INFO] [BL-c3-s43] trained 50 epochs, 1 checkpoints
+05:01:05 [INFO] [BL-c3-s44] trained 50 epochs, 1 checkpoints
+05:01:08 [INFO] [BL-c3-s45] trained 50 epochs, 1 checkpoints
+05:01:12 [INFO] [BL-c3-s46] trained 50 epochs, 1 checkpoints
+05:01:12 [INFO]   Baseline loss: 0.580977 ± 0.028454
+05:01:15 [INFO] [LOO-c3-0] trained 50 epochs, 1 checkpoints
+05:01:19 [INFO] [LOO-c3-0] trained 50 epochs, 1 checkpoints
+05:01:23 [INFO] [LOO-c3-0] trained 50 epochs, 1 checkpoints
+05:01:26 [INFO] [LOO-c3-0] trained 50 epochs, 1 checkpoints
+05:01:30 [INFO] [LOO-c3-0] trained 50 epochs, 1 checkpoints
+05:01:33 [INFO] [LOO-c3-1] trained 50 epochs, 1 checkpoints
+05:01:37 [INFO] [LOO-c3-1] trained 50 epochs, 1 checkpoints
+05:01:41 [INFO] [LOO-c3-1] trained 50 epochs, 1 checkpoints
+05:01:44 [INFO] [LOO-c3-1] trained 50 epochs, 1 checkpoints
+05:01:48 [INFO] [LOO-c3-1] trained 50 epochs, 1 checkpoints
+05:01:51 [INFO] [LOO-c3-2] trained 50 epochs, 1 checkpoints
+05:01:55 [INFO] [LOO-c3-2] trained 50 epochs, 1 checkpoints
+05:01:58 [INFO] [LOO-c3-2] trained 50 epochs, 1 checkpoints
+05:02:02 [INFO] [LOO-c3-2] trained 50 epochs, 1 checkpoints
+05:02:06 [INFO] [LOO-c3-2] trained 50 epochs, 1 checkpoints
+05:02:09 [INFO] [LOO-c3-3] trained 50 epochs, 1 checkpoints
+05:02:13 [INFO] [LOO-c3-3] trained 50 epochs, 1 checkpoints
+05:02:16 [INFO] [LOO-c3-3] trained 50 epochs, 1 checkpoints
+05:02:20 [INFO] [LOO-c3-3] trained 50 epochs, 1 checkpoints
+05:02:24 [INFO] [LOO-c3-3] trained 50 epochs, 1 checkpoints
+05:02:27 [INFO] [LOO-c3-4] trained 50 epochs, 1 checkpoints
+05:02:31 [INFO] [LOO-c3-4] trained 50 epochs, 1 checkpoints
+05:02:34 [INFO] [LOO-c3-4] trained 50 epochs, 1 checkpoints
+05:02:38 [INFO] [LOO-c3-4] trained 50 epochs, 1 checkpoints
+05:02:41 [INFO] [LOO-c3-4] trained 50 epochs, 1 checkpoints
+05:02:45 [INFO] [LOO-c3-5] trained 50 epochs, 1 checkpoints
+05:02:49 [INFO] [LOO-c3-5] trained 50 epochs, 1 checkpoints
+05:02:52 [INFO] [LOO-c3-5] trained 50 epochs, 1 checkpoints
+05:02:56 [INFO] [LOO-c3-5] trained 50 epochs, 1 checkpoints
+05:02:59 [INFO] [LOO-c3-5] trained 50 epochs, 1 checkpoints
+05:03:03 [INFO] [LOO-c3-6] trained 50 epochs, 1 checkpoints
+05:03:07 [INFO] [LOO-c3-6] trained 50 epochs, 1 checkpoints
+05:03:10 [INFO] [LOO-c3-6] trained 50 epochs, 1 checkpoints
+05:03:14 [INFO] [LOO-c3-6] trained 50 epochs, 1 checkpoints
+05:03:17 [INFO] [LOO-c3-6] trained 50 epochs, 1 checkpoints
+05:03:21 [INFO] [LOO-c3-7] trained 50 epochs, 1 checkpoints
+05:03:24 [INFO] [LOO-c3-7] trained 50 epochs, 1 checkpoints
+05:03:28 [INFO] [LOO-c3-7] trained 50 epochs, 1 checkpoints
+05:03:32 [INFO] [LOO-c3-7] trained 50 epochs, 1 checkpoints
+05:03:35 [INFO] [LOO-c3-7] trained 50 epochs, 1 checkpoints
+05:03:39 [INFO] [LOO-c3-8] trained 50 epochs, 1 checkpoints
+05:03:42 [INFO] [LOO-c3-8] trained 50 epochs, 1 checkpoints
+05:03:46 [INFO] [LOO-c3-8] trained 50 epochs, 1 checkpoints
+05:03:50 [INFO] [LOO-c3-8] trained 50 epochs, 1 checkpoints
+05:03:53 [INFO] [LOO-c3-8] trained 50 epochs, 1 checkpoints
+05:03:57 [INFO] [LOO-c3-9] trained 50 epochs, 1 checkpoints
+05:04:00 [INFO] [LOO-c3-9] trained 50 epochs, 1 checkpoints
+05:04:04 [INFO] [LOO-c3-9] trained 50 epochs, 1 checkpoints
+05:04:07 [INFO] [LOO-c3-9] trained 50 epochs, 1 checkpoints
+05:04:11 [INFO] [LOO-c3-9] trained 50 epochs, 1 checkpoints
+05:04:11 [INFO]     LOO 10/50: Δloss=-0.005269
+05:04:15 [INFO] [LOO-c3-10] trained 50 epochs, 1 checkpoints
+05:04:18 [INFO] [LOO-c3-10] trained 50 epochs, 1 checkpoints
+05:04:22 [INFO] [LOO-c3-10] trained 50 epochs, 1 checkpoints
+05:04:25 [INFO] [LOO-c3-10] trained 50 epochs, 1 checkpoints
+05:04:29 [INFO] [LOO-c3-10] trained 50 epochs, 1 checkpoints
+05:04:33 [INFO] [LOO-c3-11] trained 50 epochs, 1 checkpoints
+05:04:36 [INFO] [LOO-c3-11] trained 50 epochs, 1 checkpoints
+05:04:40 [INFO] [LOO-c3-11] trained 50 epochs, 1 checkpoints
+05:04:43 [INFO] [LOO-c3-11] trained 50 epochs, 1 checkpoints
+05:04:47 [INFO] [LOO-c3-11] trained 50 epochs, 1 checkpoints
+05:04:51 [INFO] [LOO-c3-12] trained 50 epochs, 1 checkpoints
+05:04:54 [INFO] [LOO-c3-12] trained 50 epochs, 1 checkpoints
+05:04:58 [INFO] [LOO-c3-12] trained 50 epochs, 1 checkpoints
+05:05:01 [INFO] [LOO-c3-12] trained 50 epochs, 1 checkpoints
+05:05:05 [INFO] [LOO-c3-12] trained 50 epochs, 1 checkpoints
+05:05:08 [INFO] [LOO-c3-13] trained 50 epochs, 1 checkpoints
+05:05:12 [INFO] [LOO-c3-13] trained 50 epochs, 1 checkpoints
+05:05:16 [INFO] [LOO-c3-13] trained 50 epochs, 1 checkpoints
+05:05:19 [INFO] [LOO-c3-13] trained 50 epochs, 1 checkpoints
+05:05:23 [INFO] [LOO-c3-13] trained 50 epochs, 1 checkpoints
+05:05:26 [INFO] [LOO-c3-14] trained 50 epochs, 1 checkpoints
+05:05:30 [INFO] [LOO-c3-14] trained 50 epochs, 1 checkpoints
+05:05:34 [INFO] [LOO-c3-14] trained 50 epochs, 1 checkpoints
+05:05:37 [INFO] [LOO-c3-14] trained 50 epochs, 1 checkpoints
+05:05:41 [INFO] [LOO-c3-14] trained 50 epochs, 1 checkpoints
+05:05:44 [INFO] [LOO-c3-15] trained 50 epochs, 1 checkpoints
+05:05:48 [INFO] [LOO-c3-15] trained 50 epochs, 1 checkpoints
+05:05:51 [INFO] [LOO-c3-15] trained 50 epochs, 1 checkpoints
+05:05:55 [INFO] [LOO-c3-15] trained 50 epochs, 1 checkpoints
+05:05:59 [INFO] [LOO-c3-15] trained 50 epochs, 1 checkpoints
+05:06:02 [INFO] [LOO-c3-16] trained 50 epochs, 1 checkpoints
+05:06:06 [INFO] [LOO-c3-16] trained 50 epochs, 1 checkpoints
+05:06:09 [INFO] [LOO-c3-16] trained 50 epochs, 1 checkpoints
+05:06:13 [INFO] [LOO-c3-16] trained 50 epochs, 1 checkpoints
+05:06:16 [INFO] [LOO-c3-16] trained 50 epochs, 1 checkpoints
+05:06:20 [INFO] [LOO-c3-17] trained 50 epochs, 1 checkpoints
+05:06:24 [INFO] [LOO-c3-17] trained 50 epochs, 1 checkpoints
+05:06:27 [INFO] [LOO-c3-17] trained 50 epochs, 1 checkpoints
+05:06:31 [INFO] [LOO-c3-17] trained 50 epochs, 1 checkpoints
+05:06:34 [INFO] [LOO-c3-17] trained 50 epochs, 1 checkpoints
+05:06:38 [INFO] [LOO-c3-18] trained 50 epochs, 1 checkpoints
+05:06:41 [INFO] [LOO-c3-18] trained 50 epochs, 1 checkpoints
+05:06:45 [INFO] [LOO-c3-18] trained 50 epochs, 1 checkpoints
+05:06:49 [INFO] [LOO-c3-18] trained 50 epochs, 1 checkpoints
+05:06:52 [INFO] [LOO-c3-18] trained 50 epochs, 1 checkpoints
+05:06:56 [INFO] [LOO-c3-19] trained 50 epochs, 1 checkpoints
+05:06:59 [INFO] [LOO-c3-19] trained 50 epochs, 1 checkpoints
+05:07:03 [INFO] [LOO-c3-19] trained 50 epochs, 1 checkpoints
+05:07:07 [INFO] [LOO-c3-19] trained 50 epochs, 1 checkpoints
+05:07:10 [INFO] [LOO-c3-19] trained 50 epochs, 1 checkpoints
+05:07:10 [INFO]     LOO 20/50: Δloss=-0.011345
+05:07:14 [INFO] [LOO-c3-20] trained 50 epochs, 1 checkpoints
+05:07:17 [INFO] [LOO-c3-20] trained 50 epochs, 1 checkpoints
+05:07:21 [INFO] [LOO-c3-20] trained 50 epochs, 1 checkpoints
+05:07:24 [INFO] [LOO-c3-20] trained 50 epochs, 1 checkpoints
+05:07:28 [INFO] [LOO-c3-20] trained 50 epochs, 1 checkpoints
+05:07:32 [INFO] [LOO-c3-21] trained 50 epochs, 1 checkpoints
+05:07:35 [INFO] [LOO-c3-21] trained 50 epochs, 1 checkpoints
+05:07:39 [INFO] [LOO-c3-21] trained 50 epochs, 1 checkpoints
+05:07:42 [INFO] [LOO-c3-21] trained 50 epochs, 1 checkpoints
+05:07:46 [INFO] [LOO-c3-21] trained 50 epochs, 1 checkpoints
+05:07:50 [INFO] [LOO-c3-22] trained 50 epochs, 1 checkpoints
+05:07:53 [INFO] [LOO-c3-22] trained 50 epochs, 1 checkpoints
+05:07:57 [INFO] [LOO-c3-22] trained 50 epochs, 1 checkpoints
+05:08:00 [INFO] [LOO-c3-22] trained 50 epochs, 1 checkpoints
+05:08:04 [INFO] [LOO-c3-22] trained 50 epochs, 1 checkpoints
+05:08:07 [INFO] [LOO-c3-23] trained 50 epochs, 1 checkpoints
+05:08:11 [INFO] [LOO-c3-23] trained 50 epochs, 1 checkpoints
+05:08:15 [INFO] [LOO-c3-23] trained 50 epochs, 1 checkpoints
+05:08:18 [INFO] [LOO-c3-23] trained 50 epochs, 1 checkpoints
+05:08:22 [INFO] [LOO-c3-23] trained 50 epochs, 1 checkpoints
+05:08:25 [INFO] [LOO-c3-24] trained 50 epochs, 1 checkpoints
+05:08:29 [INFO] [LOO-c3-24] trained 50 epochs, 1 checkpoints
+05:08:33 [INFO] [LOO-c3-24] trained 50 epochs, 1 checkpoints
+05:08:36 [INFO] [LOO-c3-24] trained 50 epochs, 1 checkpoints
+05:08:40 [INFO] [LOO-c3-24] trained 50 epochs, 1 checkpoints
+05:08:43 [INFO] [LOO-c3-25] trained 50 epochs, 1 checkpoints
+05:08:47 [INFO] [LOO-c3-25] trained 50 epochs, 1 checkpoints
+05:08:51 [INFO] [LOO-c3-25] trained 50 epochs, 1 checkpoints
+05:08:54 [INFO] [LOO-c3-25] trained 50 epochs, 1 checkpoints
+05:08:58 [INFO] [LOO-c3-25] trained 50 epochs, 1 checkpoints
+05:09:01 [INFO] [LOO-c3-26] trained 50 epochs, 1 checkpoints
+05:09:05 [INFO] [LOO-c3-26] trained 50 epochs, 1 checkpoints
+05:09:08 [INFO] [LOO-c3-26] trained 50 epochs, 1 checkpoints
+05:09:12 [INFO] [LOO-c3-26] trained 50 epochs, 1 checkpoints
+05:09:16 [INFO] [LOO-c3-26] trained 50 epochs, 1 checkpoints
+05:09:19 [INFO] [LOO-c3-27] trained 50 epochs, 1 checkpoints
+05:09:23 [INFO] [LOO-c3-27] trained 50 epochs, 1 checkpoints
+05:09:26 [INFO] [LOO-c3-27] trained 50 epochs, 1 checkpoints
+05:09:30 [INFO] [LOO-c3-27] trained 50 epochs, 1 checkpoints
+05:09:34 [INFO] [LOO-c3-27] trained 50 epochs, 1 checkpoints
+05:09:37 [INFO] [LOO-c3-28] trained 50 epochs, 1 checkpoints
+05:09:41 [INFO] [LOO-c3-28] trained 50 epochs, 1 checkpoints
+05:09:44 [INFO] [LOO-c3-28] trained 50 epochs, 1 checkpoints
+05:09:48 [INFO] [LOO-c3-28] trained 50 epochs, 1 checkpoints
+05:09:51 [INFO] [LOO-c3-28] trained 50 epochs, 1 checkpoints
+05:09:55 [INFO] [LOO-c3-29] trained 50 epochs, 1 checkpoints
+05:09:59 [INFO] [LOO-c3-29] trained 50 epochs, 1 checkpoints
+05:10:02 [INFO] [LOO-c3-29] trained 50 epochs, 1 checkpoints
+05:10:06 [INFO] [LOO-c3-29] trained 50 epochs, 1 checkpoints
+05:10:09 [INFO] [LOO-c3-29] trained 50 epochs, 1 checkpoints
+05:10:09 [INFO]     LOO 30/50: Δloss=-0.006118
+05:10:13 [INFO] [LOO-c3-30] trained 50 epochs, 1 checkpoints
+05:10:17 [INFO] [LOO-c3-30] trained 50 epochs, 1 checkpoints
+05:10:20 [INFO] [LOO-c3-30] trained 50 epochs, 1 checkpoints
+05:10:24 [INFO] [LOO-c3-30] trained 50 epochs, 1 checkpoints
+05:10:27 [INFO] [LOO-c3-30] trained 50 epochs, 1 checkpoints
+05:10:31 [INFO] [LOO-c3-31] trained 50 epochs, 1 checkpoints
+05:10:34 [INFO] [LOO-c3-31] trained 50 epochs, 1 checkpoints
+05:10:38 [INFO] [LOO-c3-31] trained 50 epochs, 1 checkpoints
+05:10:42 [INFO] [LOO-c3-31] trained 50 epochs, 1 checkpoints
+05:10:45 [INFO] [LOO-c3-31] trained 50 epochs, 1 checkpoints
+05:10:49 [INFO] [LOO-c3-32] trained 50 epochs, 1 checkpoints
+05:10:52 [INFO] [LOO-c3-32] trained 50 epochs, 1 checkpoints
+05:10:56 [INFO] [LOO-c3-32] trained 50 epochs, 1 checkpoints
+05:10:59 [INFO] [LOO-c3-32] trained 50 epochs, 1 checkpoints
+05:11:03 [INFO] [LOO-c3-32] trained 50 epochs, 1 checkpoints
+05:11:07 [INFO] [LOO-c3-33] trained 50 epochs, 1 checkpoints
+05:11:10 [INFO] [LOO-c3-33] trained 50 epochs, 1 checkpoints
+05:11:14 [INFO] [LOO-c3-33] trained 50 epochs, 1 checkpoints
+05:11:17 [INFO] [LOO-c3-33] trained 50 epochs, 1 checkpoints
+05:11:21 [INFO] [LOO-c3-33] trained 50 epochs, 1 checkpoints
+05:11:25 [INFO] [LOO-c3-34] trained 50 epochs, 1 checkpoints
+05:11:28 [INFO] [LOO-c3-34] trained 50 epochs, 1 checkpoints
+05:11:32 [INFO] [LOO-c3-34] trained 50 epochs, 1 checkpoints
+05:11:35 [INFO] [LOO-c3-34] trained 50 epochs, 1 checkpoints
+05:11:39 [INFO] [LOO-c3-34] trained 50 epochs, 1 checkpoints
+05:11:42 [INFO] [LOO-c3-35] trained 50 epochs, 1 checkpoints
+05:11:46 [INFO] [LOO-c3-35] trained 50 epochs, 1 checkpoints
+05:11:50 [INFO] [LOO-c3-35] trained 50 epochs, 1 checkpoints
+05:11:53 [INFO] [LOO-c3-35] trained 50 epochs, 1 checkpoints
+05:11:57 [INFO] [LOO-c3-35] trained 50 epochs, 1 checkpoints
+05:12:00 [INFO] [LOO-c3-36] trained 50 epochs, 1 checkpoints
+05:12:04 [INFO] [LOO-c3-36] trained 50 epochs, 1 checkpoints
+05:12:07 [INFO] [LOO-c3-36] trained 50 epochs, 1 checkpoints
+05:12:11 [INFO] [LOO-c3-36] trained 50 epochs, 1 checkpoints
+05:12:15 [INFO] [LOO-c3-36] trained 50 epochs, 1 checkpoints
+05:12:18 [INFO] [LOO-c3-37] trained 50 epochs, 1 checkpoints
+05:12:22 [INFO] [LOO-c3-37] trained 50 epochs, 1 checkpoints
+05:12:25 [INFO] [LOO-c3-37] trained 50 epochs, 1 checkpoints
+05:12:29 [INFO] [LOO-c3-37] trained 50 epochs, 1 checkpoints
+05:12:33 [INFO] [LOO-c3-37] trained 50 epochs, 1 checkpoints
+05:12:36 [INFO] [LOO-c3-38] trained 50 epochs, 1 checkpoints
+05:12:40 [INFO] [LOO-c3-38] trained 50 epochs, 1 checkpoints
+05:12:43 [INFO] [LOO-c3-38] trained 50 epochs, 1 checkpoints
+05:12:47 [INFO] [LOO-c3-38] trained 50 epochs, 1 checkpoints
+05:12:50 [INFO] [LOO-c3-38] trained 50 epochs, 1 checkpoints
+05:12:54 [INFO] [LOO-c3-39] trained 50 epochs, 1 checkpoints
+05:12:58 [INFO] [LOO-c3-39] trained 50 epochs, 1 checkpoints
+05:13:01 [INFO] [LOO-c3-39] trained 50 epochs, 1 checkpoints
+05:13:05 [INFO] [LOO-c3-39] trained 50 epochs, 1 checkpoints
+05:13:08 [INFO] [LOO-c3-39] trained 50 epochs, 1 checkpoints
+05:13:08 [INFO]     LOO 40/50: Δloss=-0.009731
+05:13:12 [INFO] [LOO-c3-40] trained 50 epochs, 1 checkpoints
+05:13:16 [INFO] [LOO-c3-40] trained 50 epochs, 1 checkpoints
+05:13:19 [INFO] [LOO-c3-40] trained 50 epochs, 1 checkpoints
+05:13:23 [INFO] [LOO-c3-40] trained 50 epochs, 1 checkpoints
+05:13:26 [INFO] [LOO-c3-40] trained 50 epochs, 1 checkpoints
+05:13:30 [INFO] [LOO-c3-41] trained 50 epochs, 1 checkpoints
+05:13:33 [INFO] [LOO-c3-41] trained 50 epochs, 1 checkpoints
+05:13:37 [INFO] [LOO-c3-41] trained 50 epochs, 1 checkpoints
+05:13:41 [INFO] [LOO-c3-41] trained 50 epochs, 1 checkpoints
+05:13:44 [INFO] [LOO-c3-41] trained 50 epochs, 1 checkpoints
+05:13:48 [INFO] [LOO-c3-42] trained 50 epochs, 1 checkpoints
+05:13:51 [INFO] [LOO-c3-42] trained 50 epochs, 1 checkpoints
+05:13:55 [INFO] [LOO-c3-42] trained 50 epochs, 1 checkpoints
+05:13:59 [INFO] [LOO-c3-42] trained 50 epochs, 1 checkpoints
+05:14:02 [INFO] [LOO-c3-42] trained 50 epochs, 1 checkpoints
+05:14:06 [INFO] [LOO-c3-43] trained 50 epochs, 1 checkpoints
+05:14:09 [INFO] [LOO-c3-43] trained 50 epochs, 1 checkpoints
+05:14:13 [INFO] [LOO-c3-43] trained 50 epochs, 1 checkpoints
+05:14:16 [INFO] [LOO-c3-43] trained 50 epochs, 1 checkpoints
+05:14:20 [INFO] [LOO-c3-43] trained 50 epochs, 1 checkpoints
+05:14:24 [INFO] [LOO-c3-44] trained 50 epochs, 1 checkpoints
+05:14:27 [INFO] [LOO-c3-44] trained 50 epochs, 1 checkpoints
+05:14:31 [INFO] [LOO-c3-44] trained 50 epochs, 1 checkpoints
+05:14:34 [INFO] [LOO-c3-44] trained 50 epochs, 1 checkpoints
+05:14:38 [INFO] [LOO-c3-44] trained 50 epochs, 1 checkpoints
+05:14:42 [INFO] [LOO-c3-45] trained 50 epochs, 1 checkpoints
+05:14:45 [INFO] [LOO-c3-45] trained 50 epochs, 1 checkpoints
+05:14:49 [INFO] [LOO-c3-45] trained 50 epochs, 1 checkpoints
+05:14:52 [INFO] [LOO-c3-45] trained 50 epochs, 1 checkpoints
+05:14:56 [INFO] [LOO-c3-45] trained 50 epochs, 1 checkpoints
+05:14:59 [INFO] [LOO-c3-46] trained 50 epochs, 1 checkpoints
+05:15:03 [INFO] [LOO-c3-46] trained 50 epochs, 1 checkpoints
+05:15:07 [INFO] [LOO-c3-46] trained 50 epochs, 1 checkpoints
+05:15:10 [INFO] [LOO-c3-46] trained 50 epochs, 1 checkpoints
+05:15:14 [INFO] [LOO-c3-46] trained 50 epochs, 1 checkpoints
+05:15:17 [INFO] [LOO-c3-47] trained 50 epochs, 1 checkpoints
+05:15:21 [INFO] [LOO-c3-47] trained 50 epochs, 1 checkpoints
+05:15:25 [INFO] [LOO-c3-47] trained 50 epochs, 1 checkpoints
+05:15:28 [INFO] [LOO-c3-47] trained 50 epochs, 1 checkpoints
+05:15:32 [INFO] [LOO-c3-47] trained 50 epochs, 1 checkpoints
+05:15:35 [INFO] [LOO-c3-48] trained 50 epochs, 1 checkpoints
+05:15:39 [INFO] [LOO-c3-48] trained 50 epochs, 1 checkpoints
+05:15:42 [INFO] [LOO-c3-48] trained 50 epochs, 1 checkpoints
+05:15:46 [INFO] [LOO-c3-48] trained 50 epochs, 1 checkpoints
+05:15:50 [INFO] [LOO-c3-48] trained 50 epochs, 1 checkpoints
+05:15:53 [INFO] [LOO-c3-49] trained 50 epochs, 1 checkpoints
+05:15:57 [INFO] [LOO-c3-49] trained 50 epochs, 1 checkpoints
+05:16:00 [INFO] [LOO-c3-49] trained 50 epochs, 1 checkpoints
+05:16:04 [INFO] [LOO-c3-49] trained 50 epochs, 1 checkpoints
+05:16:07 [INFO] [LOO-c3-49] trained 50 epochs, 1 checkpoints
+05:16:07 [INFO]     LOO 50/50: Δloss=-0.005262
+05:16:07 [INFO]   Spearman r=0.0412 (p=0.7762), Pearson r=0.0800 (p=0.5806)
+05:16:07 [INFO]   --- Part B: Leave-K-Out ---
+05:16:11 [INFO] [LKO-c3-top-10 proponents] trained 50 epochs, 1 checkpoints
+05:16:15 [INFO] [LKO-c3-top-10 proponents] trained 50 epochs, 1 checkpoints
+05:16:18 [INFO] [LKO-c3-top-10 proponents] trained 50 epochs, 1 checkpoints
+05:16:22 [INFO] [LKO-c3-top-10 proponents] trained 50 epochs, 1 checkpoints
+05:16:25 [INFO] [LKO-c3-top-10 proponents] trained 50 epochs, 1 checkpoints
+05:16:25 [INFO]     top-10 proponents: Δloss=+0.004603 ↑
+05:16:29 [INFO] [LKO-c3-bottom-10 opponents] trained 50 epochs, 1 checkpoints
+05:16:33 [INFO] [LKO-c3-bottom-10 opponents] trained 50 epochs, 1 checkpoints
+05:16:36 [INFO] [LKO-c3-bottom-10 opponents] trained 50 epochs, 1 checkpoints
+05:16:40 [INFO] [LKO-c3-bottom-10 opponents] trained 50 epochs, 1 checkpoints
+05:16:43 [INFO] [LKO-c3-bottom-10 opponents] trained 50 epochs, 1 checkpoints
+05:16:43 [INFO]     bottom-10 opponents: Δloss=-0.006210 ↓
+05:16:47 [INFO] [LKO-c3-top-20 proponents] trained 50 epochs, 1 checkpoints
+05:16:50 [INFO] [LKO-c3-top-20 proponents] trained 50 epochs, 1 checkpoints
+05:16:54 [INFO] [LKO-c3-top-20 proponents] trained 50 epochs, 1 checkpoints
+05:16:58 [INFO] [LKO-c3-top-20 proponents] trained 50 epochs, 1 checkpoints
+05:17:01 [INFO] [LKO-c3-top-20 proponents] trained 50 epochs, 1 checkpoints
+05:17:01 [INFO]     top-20 proponents: Δloss=+0.001455 ↑
+05:17:05 [INFO] [LKO-c3-bottom-20 opponents] trained 50 epochs, 1 checkpoints
+05:17:08 [INFO] [LKO-c3-bottom-20 opponents] trained 50 epochs, 1 checkpoints
+05:17:12 [INFO] [LKO-c3-bottom-20 opponents] trained 50 epochs, 1 checkpoints
+05:17:16 [INFO] [LKO-c3-bottom-20 opponents] trained 50 epochs, 1 checkpoints
+05:17:19 [INFO] [LKO-c3-bottom-20 opponents] trained 50 epochs, 1 checkpoints
+05:17:19 [INFO]     bottom-20 opponents: Δloss=-0.014514 ↓
+05:17:23 [INFO] [LKO-c3-top-50 proponents] trained 50 epochs, 1 checkpoints
+05:17:26 [INFO] [LKO-c3-top-50 proponents] trained 50 epochs, 1 checkpoints
+05:17:30 [INFO] [LKO-c3-top-50 proponents] trained 50 epochs, 1 checkpoints
+05:17:33 [INFO] [LKO-c3-top-50 proponents] trained 50 epochs, 1 checkpoints
+05:17:37 [INFO] [LKO-c3-top-50 proponents] trained 50 epochs, 1 checkpoints
+05:17:37 [INFO]     top-50 proponents: Δloss=+0.013021 ↑
+05:17:40 [INFO] [LKO-c3-bottom-50 opponents] trained 50 epochs, 1 checkpoints
+05:17:44 [INFO] [LKO-c3-bottom-50 opponents] trained 50 epochs, 1 checkpoints
+05:17:47 [INFO] [LKO-c3-bottom-50 opponents] trained 50 epochs, 1 checkpoints
+05:17:51 [INFO] [LKO-c3-bottom-50 opponents] trained 50 epochs, 1 checkpoints
+05:17:54 [INFO] [LKO-c3-bottom-50 opponents] trained 50 epochs, 1 checkpoints
+05:17:54 [INFO]     bottom-50 opponents: Δloss=+0.013069 ↑
+05:17:54 [INFO]   Class 3 done in 1020.7s
+05:17:58 [INFO] 
+  CLASS 0 (CNV) n=50
+05:17:58 [INFO]     original           : Spearman r=+0.264 (p=0.064), Pearson r=+0.132
+05:17:58 [INFO]     IQR(k=1.5) kept 50/50: Spearman r=+0.264 (p=0.064)
+05:17:58 [INFO]     drop cluster [0] kept 30/50: Spearman r=+0.420 (p=0.021)
+05:17:58 [INFO]     Plot saved: results/oct_loo_outlier/loo_outlier_class0.png
+05:17:58 [INFO] 
+  CLASS 1 (DME) n=50
+05:17:58 [INFO]     original           : Spearman r=+0.055 (p=0.704), Pearson r=-0.004
+05:17:58 [INFO]     IQR(k=1.5) kept 45/50: Spearman r=+0.145 (p=0.341)
+05:17:58 [INFO]     drop cluster [0] kept 37/50: Spearman r=+0.133 (p=0.433)
+05:17:59 [INFO]     Plot saved: results/oct_loo_outlier/loo_outlier_class1.png
+05:17:59 [INFO] 
+  CLASS 2 (DRUSEN) n=50
+05:17:59 [INFO]     original           : Spearman r=+0.126 (p=0.382), Pearson r=+0.258
+05:17:59 [INFO]     IQR(k=1.5) kept 50/50: Spearman r=+0.126 (p=0.382)
+05:17:59 [INFO]     drop cluster [0] kept 38/50: Spearman r=-0.034 (p=0.837)
+05:17:59 [INFO]     Plot saved: results/oct_loo_outlier/loo_outlier_class2.png
+05:17:59 [INFO] 
+  CLASS 3 (NORMAL) n=50
+05:17:59 [INFO]     original           : Spearman r=+0.041 (p=0.776), Pearson r=+0.080
+05:17:59 [INFO]     IQR(k=1.5) kept 50/50: Spearman r=+0.041 (p=0.776)
+05:17:59 [INFO]     drop cluster [0] kept 29/50: Spearman r=+0.020 (p=0.917)
+05:18:00 [INFO]     Plot saved: results/oct_loo_outlier/loo_outlier_class3.png
