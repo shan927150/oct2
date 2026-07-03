@@ -17,6 +17,9 @@ only the first m seeds and report:
   debiased_var  = between_point_var - noise_floor_var
                   Unbiased estimate of the TRUE point-to-point spread of the means. Does
                   not grow mechanically with m. ~0 (or <0) => no point-level signal.
+                  noise_floor_var uses the PAIRED delta std (loo - same-seed baseline), so
+                  the shared seed init/batch excursion is cancelled and not double-counted;
+                  the earlier unpaired noise_floor over-estimated this floor.
   spearman      = Spearman(tracin, delta_loss_mean) with a point-bootstrap 95% CI.
 
 Reading: debiased_var clearly > 0 AND the Spearman CI settles off 0 => averaging
@@ -208,9 +211,13 @@ def main():
 
         print(f"  {'m':>4} {'debiased_var':>13} {'raw_SNR':>9} {'spearman':>9} {'ci_lo':>7} {'ci_hi':>7}")
         for m in grid:
-            base_m = base[:m].mean()
-            dl_mean = loo[:, :m].mean(axis=1) - base_m
-            dl_std = loo[:, :m].std(axis=1, ddof=1) if m > 1 else np.zeros(len(pts))
+            # PAIRED baseline: delta(p,s) = loo(p,s) - base(s). Pairing cancels the shared
+            # seed init/batch excursion, so dl_std is the TRUE sampling noise of dl_mean.
+            # (Using loo std alone would count the shared excursion that actually cancels,
+            #  systematically OVER-estimating the noise floor.)
+            per_seed_delta = loo[:, :m] - base[:m][None, :]
+            dl_mean = per_seed_delta.mean(axis=1)                       # == loo.mean - base.mean
+            dl_std = per_seed_delta.std(axis=1, ddof=1) if m > 1 else np.zeros(len(pts))
             between = float(np.var(dl_mean, ddof=1))
             noise = float(np.mean(dl_std ** 2) / m)
             raw_snr = between / noise if noise > 0 else float("inf")
