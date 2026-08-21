@@ -17,7 +17,8 @@ continuous-pathway derivation:
 
 The attack-table row universe and the target-query set are fixed.  Images from
 the removed patient remain interface queries, but their attack-training label
-changes from member to nonmember in J01/J11.
+changes from member to nonmember in J01/J11.  The primary endpoint is the
+matched OCT-class attack cross-entropy change, not a macro average.
 """
 from __future__ import annotations
 
@@ -50,8 +51,17 @@ from sklearn.metrics import (
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SRC_DIR = REPO_ROOT / "src"
-if str(SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(SRC_DIR))
+if (SRC_DIR / "config.py").is_file():
+    MODULE_DIR = SRC_DIR
+elif (REPO_ROOT / "config.py").is_file():
+    # Delta's historical deployment has config.py/data.py/models.py/split.py
+    # directly under ~/oct2 instead of under ~/oct2/src.
+    MODULE_DIR = REPO_ROOT
+else:
+    raise RuntimeError(
+        f"Cannot find project modules under {SRC_DIR} or {REPO_ROOT}")
+if str(MODULE_DIR) not in sys.path:
+    sys.path.insert(0, str(MODULE_DIR))
 
 from config import preset_oct  # noqa: E402
 from data import load_dataset  # noqa: E402
@@ -75,9 +85,9 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--n_shadow", type=int, default=5)
     ap.add_argument("--affected_shadow", type=int, default=0)
     ap.add_argument("--n_patients", type=int, default=8)
-    ap.add_argument("--min_patient_images", type=int, default=2)
+    ap.add_argument("--min_patient_images", type=int, default=5)
     ap.add_argument("--max_patient_images", type=int, default=15)
-    ap.add_argument("--classes", type=int, nargs="+", default=[0, 1, 2, 3])
+    ap.add_argument("--classes", type=int, nargs="+", default=[1, 2])
     ap.add_argument("--seeds", type=int, nargs="+", default=[42, 43, 44])
     ap.add_argument("--split_seed", type=int, default=42005)
     ap.add_argument("--selection_seed", type=int, default=42006)
@@ -92,9 +102,19 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--noop_replays", type=int, default=1,
                     help="same-data replay count per seed; verifies deterministic no-op floor")
     ap.add_argument("--gate_min_queries_per_label", type=int, default=50)
-    ap.add_argument("--gate_min_macro_auc", type=float, default=0.55)
-    ap.add_argument("--gate_min_macro_balanced_accuracy", type=float, default=0.53)
-    ap.add_argument("--enforce_attack_gate", action="store_true")
+    ap.add_argument("--gate_min_class_auc", type=float, default=0.55)
+    ap.add_argument("--gate_min_class_balanced_accuracy", type=float, default=0.53)
+    ap.add_argument(
+        "--enforce_attack_gate", action="store_true",
+        help=("run LOO only for classes whose baseline attack passes the "
+              "per-class gate for every seed; fail if no class qualifies"))
+    ap.add_argument("--noop_tolerance", type=float, default=0.0)
+    ap.add_argument(
+        "--enforce_noop_gate", action="store_true",
+        help="stop before LOO unless Stage-1 and Stage-2 no-op replays are within tolerance")
+    ap.add_argument(
+        "--baseline_only", action="store_true",
+        help="run baseline attack qualification and complete no-op replay, then stop")
     ap.add_argument("--overwrite", action="store_true",
                     help="recompute completed patient/seed result JSON files")
     ap.add_argument("--deterministic", action=argparse.BooleanOptionalAction, default=True)
@@ -108,6 +128,9 @@ def seed_everything(seed: int, deterministic: bool = True) -> None:
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
     if deterministic:
+        # PyTorch 2.8 has no deterministic CUDA implementation for
+        # adaptive_avg_pool2d_backward.  Keep all other deterministic checks
+        # active and measure the residual floor with a full no-op replay.
         torch.use_deterministic_algorithms(True, warn_only=True)
         torch.backends.cudnn.benchmark = False
         torch.backends.cudnn.deterministic = True
@@ -235,7 +258,11 @@ def choose_patients(
     max_images: int,
     seed: int,
 ) -> List[Dict[str, object]]:
-    """Class-stratified random selection, independent of old scores/LOO values."""
+    """Exactly class-balanced random selection, independent of old scores."""
+    if n_patients % len(classes) != 0:
+        raise ValueError(
+            f"--n_patients={n_patients} must be divisible by "
+            f"the number of classes ({len(classes)})")
     idx = np.asarray(train_indices, dtype=np.int64)
     rows: List[Dict[str, object]] = []
     for pid in np.unique(groups[idx]):
@@ -254,23 +281,17 @@ def choose_patients(
 
     rng = np.random.default_rng(seed)
     selected: List[Dict[str, object]] = []
-    quota = n_patients // max(1, len(classes))
-    leftovers: List[Dict[str, object]] = []
+    quota = n_patients // len(classes)
     for cls in classes:
         pool = [r for r in rows if r["oct_class"] == cls]
         rng.shuffle(pool)
+        if len(pool) < quota:
+            counts = {int(c): sum(r["oct_class"] == c for r in rows) for c in classes}
+            raise RuntimeError(
+                f"Class {cls} has only {len(pool)} eligible patients; needs {quota}. "
+                f"Eligible by class={counts}. Widen --min/--max_patient_images.")
         selected.extend(pool[:quota])
-        leftovers.extend(pool[quota:])
-    rng.shuffle(leftovers)
-    already = {r["patient_id"] for r in selected}
-    selected.extend([r for r in leftovers if r["patient_id"] not in already]
-                    [:max(0, n_patients - len(selected))])
-    selected = selected[:n_patients]
-    if len(selected) < n_patients:
-        counts = {int(c): sum(r["oct_class"] == c for r in rows) for c in classes}
-        raise RuntimeError(
-            f"Only {len(selected)} eligible patients for requested {n_patients}; "
-            f"eligible by class={counts}. Widen --min/--max_patient_images or reduce --n_patients.")
+    rng.shuffle(selected)
     return selected
 
 
@@ -365,11 +386,11 @@ def drift_summary(
 ) -> Dict[str, Dict[str, float]]:
     affected = baseline["shadow_id"] == affected_shadow
     deleted = affected & (groups[baseline["raw_index"]] == patient_id)
-    other_member = affected & (baseline["membership"] == 1) & ~deleted
+    retained_member = affected & (baseline["membership"] == 1) & ~deleted
     nonmember = affected & (baseline["membership"] == 0)
     masks = {
         "deleted_patient": deleted,
-        "other_members": other_member,
+        "retained_members": retained_member,
         "nonmembers": nonmember,
         "all_affected_shadow_rows": affected,
     }
@@ -453,8 +474,10 @@ def evaluate_attack_condition(
     classes: Sequence[int],
     seed: int,
     args: argparse.Namespace,
-) -> Dict[str, object]:
+    return_probabilities: bool = False,
+):
     per_class: Dict[str, object] = {}
+    probabilities: Dict[str, np.ndarray] = {}
     for cls in classes:
         tr = train_classes == cls
         te = target["classes"] == cls
@@ -468,6 +491,7 @@ def evaluate_attack_condition(
             args.attack_epochs, args.attack_lr, args.attack_batch_size,
             n_hidden=64, deterministic=args.deterministic)
         prob = predict_attack_prob(model, target["x"][te])
+        probabilities[str(cls)] = prob
         per_class[str(cls)] = {
             "class_name": CLASS_NAMES.get(cls, str(cls)),
             "n_train": int(tr.sum()),
@@ -477,25 +501,67 @@ def evaluate_attack_condition(
         }
     numeric = ("accuracy", "balanced_accuracy", "auc", "cross_entropy", "member_recall")
     macro = {key: float(np.mean([per_class[str(c)][key] for c in classes])) for key in numeric}
-    return {"per_class": per_class, "macro": macro}
+    metrics = {"per_class": per_class, "macro": macro}
+    if return_probabilities:
+        return metrics, probabilities
+    return metrics
 
 
 def attack_gate(metrics: Mapping[str, object], args: argparse.Namespace) -> Dict[str, object]:
-    failures = []
+    per_class = {}
     for cls, row in metrics["per_class"].items():
+        failures = []
         if min(row["n_member"], row["n_nonmember"]) < args.gate_min_queries_per_label:
             failures.append(
-                f"class {cls} has min(member,nonmember)={min(row['n_member'], row['n_nonmember'])}")
-    if metrics["macro"]["auc"] < args.gate_min_macro_auc:
-        failures.append(f"macro AUC {metrics['macro']['auc']:.4f} < {args.gate_min_macro_auc:.4f}")
-    if metrics["macro"]["balanced_accuracy"] < args.gate_min_macro_balanced_accuracy:
-        failures.append(
-            f"macro balanced accuracy {metrics['macro']['balanced_accuracy']:.4f} "
-            f"< {args.gate_min_macro_balanced_accuracy:.4f}")
-    return {"passed": not failures, "failures": failures}
+                f"min(member,nonmember)={min(row['n_member'], row['n_nonmember'])} "
+                f"< {args.gate_min_queries_per_label}")
+        if row["auc"] < args.gate_min_class_auc:
+            failures.append(
+                f"AUC {row['auc']:.4f} < {args.gate_min_class_auc:.4f}")
+        if row["balanced_accuracy"] < args.gate_min_class_balanced_accuracy:
+            failures.append(
+                f"balanced accuracy {row['balanced_accuracy']:.4f} "
+                f"< {args.gate_min_class_balanced_accuracy:.4f}")
+        per_class[cls] = {
+            "class_name": row["class_name"],
+            "passed": not failures,
+            "failures": failures,
+        }
+    return {
+        "policy": "each class is qualified independently on every baseline seed",
+        "per_class": per_class,
+        "passed_all_classes": bool(all(r["passed"] for r in per_class.values())),
+        "passed_any_class": bool(any(r["passed"] for r in per_class.values())),
+    }
 
 
-def endpoint_deltas(conditions: Mapping[str, object]) -> Dict[str, object]:
+def classes_passing_all_seeds(
+    baseline_records: Mapping[str, object], classes: Sequence[int]
+) -> List[int]:
+    return [
+        int(cls) for cls in classes
+        if all(
+            record["attack_gate"]["per_class"][str(cls)]["passed"]
+            for record in baseline_records.values()
+        )
+    ]
+
+
+def subset_attack_metrics(
+    metrics: Mapping[str, object], classes: Sequence[int]
+) -> Dict[str, object]:
+    per_class = {str(cls): metrics["per_class"][str(cls)] for cls in classes}
+    numeric = ("accuracy", "balanced_accuracy", "auc", "cross_entropy", "member_recall")
+    macro = {
+        key: float(np.mean([per_class[str(cls)][key] for cls in classes]))
+        for key in numeric
+    }
+    return {"per_class": per_class, "macro": macro}
+
+
+def endpoint_deltas(
+    conditions: Mapping[str, object], matched_class: int
+) -> Dict[str, object]:
     keys = ("accuracy", "balanced_accuracy", "auc", "cross_entropy", "member_recall")
 
     def diff(a: str, b: str, level: str, cls: str | None = None) -> Dict[str, float]:
@@ -532,6 +598,16 @@ def endpoint_deltas(conditions: Mapping[str, object]) -> Dict[str, object]:
                        + conditions["J00"]["per_class"][cls][key])
             for key in keys
         }
+    matched_key = str(matched_class)
+    if matched_key not in out["per_class"]:
+        raise RuntimeError(
+            f"Patient class {matched_class} was not qualified for LOO")
+    out["matched_class"] = {
+        "oct_class": matched_class,
+        "class_name": CLASS_NAMES.get(matched_class, str(matched_class)),
+        "primary_endpoint": "cross_entropy",
+        **out["per_class"][matched_key],
+    }
     return out
 
 
@@ -556,10 +632,10 @@ def build_config(args: argparse.Namespace):
     return cfg
 
 
-def prepare_split(cfg, X, y, groups, out_dir: Path):
+def prepare_split(cfg, X, y, groups, out_dir: Path, overwrite: bool):
     split_path = out_dir / "splits" / "fresh_patient_split.json"
     _, _, splits = indexed_split_data(
-        X, y, cfg, split_path=str(split_path), reuse_if_exists=True,
+        X, y, cfg, split_path=str(split_path), reuse_if_exists=not overwrite,
         shadow_data_size=cfg.get_shadow_data_size(),
         disjoint_shadow_models=False, balanced=False,
         return_splits=True, groups=groups)
@@ -629,24 +705,32 @@ def train_or_load_stage1(
 def write_flat_summary(out_dir: Path, results: Sequence[Mapping[str, object]]) -> None:
     rows = []
     for result in results:
-        drift = result["interface_drift"]["all_affected_shadow_rows"]
-        full = result["endpoint_deltas"]["macro"]["full_J11_minus_J00"]
-        value = result["endpoint_deltas"]["macro"]["value_J10_minus_J00"]
+        drifts = result["interface_drift"]
+        matched = result["endpoint_deltas"]["matched_class"]
+        full = matched["full_J11_minus_J00"]
+        value = matched["value_J10_minus_J00"]
+        relabel = matched["relabel_J01_minus_J00"]
+        macro_full = result["endpoint_deltas"]["macro"]["full_J11_minus_J00"]
         rows.append({
             "seed": result["seed"],
             "patient_id": result["patient"]["patient_id"],
             "oct_class": result["patient"]["oct_class"],
+            "class_name": result["patient"]["class_name"],
             "n_images": result["patient"]["n_images"],
-            "interface_mean_js": drift["mean_js"],
-            "interface_mean_l1": drift["mean_l1"],
-            "interface_max_abs": drift["max_abs"],
-            "delta_full_accuracy": full["accuracy"],
-            "delta_full_balanced_accuracy": full["balanced_accuracy"],
-            "delta_full_auc": full["auc"],
-            "delta_full_cross_entropy": full["cross_entropy"],
-            "delta_value_accuracy": value["accuracy"],
-            "delta_value_auc": value["auc"],
-            "delta_value_cross_entropy": value["cross_entropy"],
+            "deleted_mean_js": drifts["deleted_patient"]["mean_js"],
+            "retained_member_mean_js": drifts["retained_members"]["mean_js"],
+            "nonmember_mean_js": drifts["nonmembers"]["mean_js"],
+            "all_affected_mean_js": drifts["all_affected_shadow_rows"]["mean_js"],
+            "all_affected_mean_l1": drifts["all_affected_shadow_rows"]["mean_l1"],
+            "all_affected_max_abs": drifts["all_affected_shadow_rows"]["max_abs"],
+            "primary_delta_full_matched_cross_entropy": full["cross_entropy"],
+            "delta_full_matched_accuracy": full["accuracy"],
+            "delta_full_matched_balanced_accuracy": full["balanced_accuracy"],
+            "delta_full_matched_auc": full["auc"],
+            "delta_value_matched_cross_entropy": value["cross_entropy"],
+            "delta_relabel_matched_cross_entropy": relabel["cross_entropy"],
+            "delta_full_macro_cross_entropy": macro_full["cross_entropy"],
+            "delta_full_macro_auc": macro_full["auc"],
         })
     path = out_dir / "patient_seed_summary.csv"
     with path.open("w", newline="", encoding="utf-8") as f:
@@ -669,31 +753,57 @@ def aggregate_analysis(
         by_patient.setdefault(int(result["patient"]["patient_id"]), []).append(result)
     patient_rows = []
     for pid, runs in sorted(by_patient.items()):
-        js = np.asarray([r["interface_drift"]["all_affected_shadow_rows"]["mean_js"] for r in runs])
-        d_auc = np.asarray([
-            r["endpoint_deltas"]["macro"]["full_J11_minus_J00"]["auc"] for r in runs])
-        d_ce = np.asarray([
-            r["endpoint_deltas"]["macro"]["full_J11_minus_J00"]["cross_entropy"] for r in runs])
-        d_acc = np.asarray([
-            r["endpoint_deltas"]["macro"]["full_J11_minus_J00"]["accuracy"] for r in runs])
+        drift_arrays = {
+            "deleted_patient_mean_js": np.asarray([
+                r["interface_drift"]["deleted_patient"]["mean_js"] for r in runs]),
+            "retained_members_mean_js": np.asarray([
+                r["interface_drift"]["retained_members"]["mean_js"] for r in runs]),
+            "nonmembers_mean_js": np.asarray([
+                r["interface_drift"]["nonmembers"]["mean_js"] for r in runs]),
+            "all_affected_mean_js": np.asarray([
+                r["interface_drift"]["all_affected_shadow_rows"]["mean_js"] for r in runs]),
+        }
+
+        def matched_effect(pathway: str, metric: str) -> np.ndarray:
+            return np.asarray([
+                r["endpoint_deltas"]["matched_class"][pathway][metric]
+                for r in runs
+            ])
+
+        d_ce = matched_effect("full_J11_minus_J00", "cross_entropy")
+        d_auc = matched_effect("full_J11_minus_J00", "auc")
+        d_bacc = matched_effect("full_J11_minus_J00", "balanced_accuracy")
+        d_acc = matched_effect("full_J11_minus_J00", "accuracy")
+        d_value_ce = matched_effect("value_J10_minus_J00", "cross_entropy")
+        d_relabel_ce = matched_effect("relabel_J01_minus_J00", "cross_entropy")
+
+        def sign_concordance(values: np.ndarray) -> float | None:
+            if len(values) < 2:
+                return None
+            return float(max((values > 0).mean(), (values < 0).mean()))
+
         patient_rows.append({
             "patient_id": pid,
             "oct_class": int(runs[0]["patient"]["oct_class"]),
+            "class_name": runs[0]["patient"]["class_name"],
             "n_images": int(runs[0]["patient"]["n_images"]),
             "n_seeds": len(runs),
-            "mean_interface_js": float(js.mean()),
-            "mean_delta_full_auc": float(d_auc.mean()),
-            "mean_delta_full_cross_entropy": float(d_ce.mean()),
-            "mean_delta_full_accuracy": float(d_acc.mean()),
-            "seed_sign_concordance_auc": float(max((d_auc > 0).mean(), (d_auc < 0).mean())),
-            "seed_sign_concordance_cross_entropy": float(max((d_ce > 0).mean(), (d_ce < 0).mean())),
+            **{key: float(values.mean()) for key, values in drift_arrays.items()},
+            "mean_delta_full_matched_cross_entropy": float(d_ce.mean()),
+            "mean_delta_full_matched_auc": float(d_auc.mean()),
+            "mean_delta_full_matched_balanced_accuracy": float(d_bacc.mean()),
+            "mean_delta_full_matched_accuracy": float(d_acc.mean()),
+            "mean_delta_value_matched_cross_entropy": float(d_value_ce.mean()),
+            "mean_delta_relabel_matched_cross_entropy": float(d_relabel_ce.mean()),
+            "seed_sign_concordance_matched_cross_entropy": sign_concordance(d_ce),
+            "seed_sign_concordance_matched_auc": sign_concordance(d_auc),
         })
 
-    def rho(key: str) -> Dict[str, float | int | None]:
+    def rho(drift_key: str, effect_key: str) -> Dict[str, float | int | None]:
         if len(patient_rows) < 3:
             return {"n": len(patient_rows), "rho": None, "pvalue_descriptive_only": None}
-        x = [r["mean_interface_js"] for r in patient_rows]
-        yv = [abs(r[key]) for r in patient_rows]
+        x = [r[drift_key] for r in patient_rows]
+        yv = [abs(r[effect_key]) for r in patient_rows]
         value, pvalue = spearmanr(x, yv)
         return {
             "n": len(patient_rows),
@@ -701,38 +811,83 @@ def aggregate_analysis(
             "pvalue_descriptive_only": float(pvalue) if np.isfinite(pvalue) else None,
         }
 
-    baseline_auc = np.asarray([r["attack"]["macro"]["auc"] for r in baseline_records.values()])
-    baseline_acc = np.asarray([r["attack"]["macro"]["accuracy"] for r in baseline_records.values()])
+    def incremental_r2(drift_key: str, effect_key: str) -> Dict[str, object]:
+        """Incremental R2 of drift after controlling image count and OCT class."""
+        n = len(patient_rows)
+        if n < 4:
+            return {"n": n, "incremental_r2": None, "reason": "fewer than 4 patients"}
+        n_images = np.asarray([r["n_images"] for r in patient_rows], dtype=float)
+        classes = np.asarray([r["oct_class"] for r in patient_rows], dtype=int)
+        drift = np.asarray([r[drift_key] for r in patient_rows], dtype=float)
+        outcome = np.abs(np.asarray([r[effect_key] for r in patient_rows], dtype=float))
+        if np.std(drift) == 0 or np.std(outcome) == 0:
+            return {"n": n, "incremental_r2": None, "reason": "constant drift or outcome"}
+
+        def zscore(values: np.ndarray) -> np.ndarray:
+            sd = values.std()
+            return (values - values.mean()) / sd if sd > 0 else np.zeros_like(values)
+
+        class_levels = sorted(set(classes.tolist()))
+        class_columns = [
+            (classes == cls).astype(float) for cls in class_levels[1:]
+        ]
+        base_columns = [np.ones(n), zscore(n_images), *class_columns]
+        x_base = np.column_stack(base_columns)
+        x_full = np.column_stack([*base_columns, zscore(drift)])
+
+        def r_squared(design: np.ndarray) -> float:
+            fitted = design @ np.linalg.lstsq(design, outcome, rcond=None)[0]
+            total = float(np.sum((outcome - outcome.mean()) ** 2))
+            residual = float(np.sum((outcome - fitted) ** 2))
+            return 1.0 - residual / total
+
+        base_r2 = r_squared(x_base)
+        full_r2 = r_squared(x_full)
+        return {
+            "n": n,
+            "controls": ["n_images", "oct_class"],
+            "outcome": f"abs({effect_key})",
+            "baseline_r2": float(base_r2),
+            "full_r2": float(full_r2),
+            "incremental_r2": float(full_r2 - base_r2),
+            "descriptive_only": True,
+        }
+
+    baseline_by_class = {}
+    if baseline_records:
+        class_keys = next(iter(baseline_records.values()))["attack"]["per_class"].keys()
+        for cls in class_keys:
+            rows = [r["attack"]["per_class"][cls] for r in baseline_records.values()]
+            baseline_by_class[cls] = {
+                "class_name": rows[0]["class_name"],
+                "auc_mean": float(np.mean([r["auc"] for r in rows])),
+                "auc_sd": float(np.std([r["auc"] for r in rows], ddof=1)) if len(rows) > 1 else 0.0,
+                "balanced_accuracy_mean": float(np.mean([r["balanced_accuracy"] for r in rows])),
+                "cross_entropy_mean": float(np.mean([r["cross_entropy"] for r in rows])),
+            }
+
+    drift_keys = (
+        "deleted_patient_mean_js", "retained_members_mean_js",
+        "nonmembers_mean_js", "all_affected_mean_js")
+    primary_effect = "mean_delta_full_matched_cross_entropy"
     return {
-        "qualification": "pilot/descriptive; do not interpret p-values as confirmatory",
+        "qualification": "pilot/descriptive; matched-class CE is primary; no confirmatory p-values",
         "patient_seed_aggregation": patient_rows,
-        "interface_vs_abs_full_effect": {
-            "auc": rho("mean_delta_full_auc"),
-            "cross_entropy": rho("mean_delta_full_cross_entropy"),
-            "accuracy": rho("mean_delta_full_accuracy"),
+        "interface_vs_abs_primary_effect": {
+            key: rho(key, primary_effect) for key in drift_keys
         },
-        "baseline_seed_floor": {
-            "macro_auc_mean": float(baseline_auc.mean()),
-            "macro_auc_sd": float(baseline_auc.std(ddof=1)) if len(baseline_auc) > 1 else 0.0,
-            "macro_accuracy_mean": float(baseline_acc.mean()),
-            "macro_accuracy_sd": float(baseline_acc.std(ddof=1)) if len(baseline_acc) > 1 else 0.0,
+        "n_images_and_class_adjusted_incremental_r2": {
+            key: incremental_r2(key, primary_effect) for key in drift_keys
         },
+        "baseline_by_class": baseline_by_class,
         "deterministic_noop": {
-            "all_exact": bool(all(r["passed_exact_replay"] for r in noop_records)),
-            "max_abs_over_replays": float(max((r["max_abs"] for r in noop_records), default=0.0)),
+            "passed_all": bool(noop_records) and bool(
+                all(r["passed"] for r in noop_records)),
+            "max_stage1_abs": float(max(
+                (r["stage1_max_abs"] for r in noop_records), default=0.0)),
+            "max_stage2_abs": float(max(
+                (r["stage2_max_abs"] for r in noop_records), default=0.0)),
         },
-        "patient_direction_concordance": {
-            "full_auc": float(max(
-                np.mean([r["mean_delta_full_auc"] > 0 for r in patient_rows]),
-                np.mean([r["mean_delta_full_auc"] < 0 for r in patient_rows]),
-            )) if patient_rows else None,
-            "full_cross_entropy": float(max(
-                np.mean([r["mean_delta_full_cross_entropy"] > 0 for r in patient_rows]),
-                np.mean([r["mean_delta_full_cross_entropy"] < 0 for r in patient_rows]),
-            )) if patient_rows else None,
-        },
-        "attack_gate_all_seeds": bool(all(
-            r["attack_gate"]["passed"] for r in baseline_records.values())),
     }
 
 
@@ -740,7 +895,7 @@ def main() -> None:
     args = parse_args()
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S")
+        datefmt="%Y-%m-%d %H:%M:%S", stream=sys.stdout, force=True)
     started = time.time()
     out_dir = Path(args.output_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -751,8 +906,15 @@ def main() -> None:
         raise ValueError("--affected_shadow must be within [0, n_shadow)")
     if not args.classes:
         raise ValueError("--classes cannot be empty")
+    if len(set(args.classes)) != len(args.classes):
+        raise ValueError("--classes must be unique")
     if len(set(args.seeds)) != len(args.seeds):
         raise ValueError("--seeds must be unique")
+    if args.noop_replays < 1 and args.enforce_noop_gate:
+        raise ValueError("--enforce_noop_gate requires --noop_replays >= 1")
+    if args.noop_tolerance < 0:
+        raise ValueError("--noop_tolerance must be nonnegative")
+    LOGGER.info("Project module layout: %s", MODULE_DIR)
 
     cfg = build_config(args)
     config_path = out_dir / "experiment_config.json"
@@ -763,12 +925,21 @@ def main() -> None:
             "J10": "LOO vectors + baseline membership (value pathway)",
             "J01": "baseline vectors + LOO membership (relabel pathway)",
             "J11": "LOO vectors + LOO membership (full patient LOO)",
+            "primary": "patient-matched OCT-class cross-entropy: J11 - J00",
+            "mechanistic": "patient-matched OCT-class cross-entropy: J10 - J00",
+            "secondary": "matched-class balanced accuracy, accuracy, AUC; macro metrics",
         },
+        "gate_policy": (
+            "A class enters LOO only if its baseline attack passes query-count, AUC, "
+            "and balanced-accuracy thresholds for every seed"),
+        "primary_sign": (
+            "positive matched-class CE change means removal hurts the attack "
+            "(the patient was attack-supporting)"),
         "forbidden_inputs": ["scores_class*.npz", "old loo_*.json", "old attack_data.npz"],
     }
     if config_path.exists() and not args.overwrite:
         previous = json.loads(config_path.read_text(encoding="utf-8"))
-        ignored = {"overwrite"}
+        ignored = {"overwrite", "baseline_only"}
         before = {k: v for k, v in previous.get("args", {}).items() if k not in ignored}
         now = {k: v for k, v in vars(args).items() if k not in ignored}
         if before != now:
@@ -781,7 +952,7 @@ def main() -> None:
     X, y, groups = load_dataset(cfg)
     if groups is None:
         raise RuntimeError("This experiment requires patient/group identifiers")
-    split_path, splits = prepare_split(cfg, X, y, groups, out_dir)
+    split_path, splits = prepare_split(cfg, X, y, groups, out_dir, args.overwrite)
     split_hash = sha256_file(split_path)
     split_validation = validate_patient_split(splits, groups)
     json_dump(out_dir / "split_validation.json", split_validation)
@@ -796,7 +967,9 @@ def main() -> None:
             affected_split["train_idx"], y, groups, args.classes, args.n_patients,
             args.min_patient_images, args.max_patient_images, args.selection_seed)
         json_dump(candidates_path, {
-            "selection_rule": "class-stratified random within patient image-count bounds; no old scores",
+            "selection_rule": (
+                "exactly class-balanced random selection within patient image-count bounds; "
+                "no old scores or LOO outcomes"),
             "selection_seed": args.selection_seed,
             "split_sha256": split_hash,
             "patients": candidates,
@@ -830,11 +1003,13 @@ def main() -> None:
             args.fixed_shadow_seed + sid, args)
         fixed_models[sid] = model
 
-    all_results: List[Mapping[str, object]] = []
-    baseline_records = {}
-    noop_records = []
+    # ------------------------------------------------------------------
+    # Phase A: baseline qualification for every seed before any LOO.
+    # ------------------------------------------------------------------
+    baseline_records: Dict[str, object] = {}
+    baseline_contexts: Dict[int, object] = {}
     for seed in args.seeds:
-        LOGGER.info("=== Paired Stage-1 seed %d ===", seed)
+        LOGGER.info("=== Baseline qualification seed %d ===", seed)
         baseline_path = out_dir / "checkpoints" / f"shadow_{args.affected_shadow}_baseline_seed{seed}.pt"
         baseline_model, baseline_shadow_metrics, orders = train_or_load_stage1(
             baseline_path, X, y, affected_split["train_idx"], affected_split["test_idx"],
@@ -845,9 +1020,9 @@ def main() -> None:
         for sid in range(args.n_shadow):
             models.append(baseline_model if sid == args.affected_shadow else fixed_models[sid])
         interface0 = make_interface(models, splits, X, y)
-        baseline_attack = evaluate_attack_condition(
+        baseline_attack, baseline_probabilities = evaluate_attack_condition(
             interface0["x"], interface0["membership"], interface0["classes"],
-            target_queries, args.classes, seed, args)
+            target_queries, args.classes, seed, args, return_probabilities=True)
         gate = attack_gate(baseline_attack, args)
         baseline_records[str(seed)] = {
             "shadow_metrics": baseline_shadow_metrics,
@@ -855,10 +1030,65 @@ def main() -> None:
             "attack_gate": gate,
         }
         json_dump(out_dir / f"baseline_seed{seed}.json", baseline_records[str(seed)])
-        if not gate["passed"]:
-            LOGGER.warning("Attack gate failed for seed %d: %s", seed, gate["failures"])
-            if args.enforce_attack_gate:
-                raise RuntimeError(f"Attack gate failed for seed {seed}: {gate['failures']}")
+        baseline_contexts[seed] = {
+            "shadow_metrics": baseline_shadow_metrics,
+            "interface": interface0,
+            "attack": baseline_attack,
+            "attack_probabilities": baseline_probabilities,
+        }
+        for cls in args.classes:
+            class_gate = gate["per_class"][str(cls)]
+            log = LOGGER.info if class_gate["passed"] else LOGGER.warning
+            log(
+                "Attack gate seed=%d class=%s passed=%s failures=%s",
+                seed, CLASS_NAMES.get(cls, str(cls)), class_gate["passed"],
+                class_gate["failures"])
+
+    qualified_classes = classes_passing_all_seeds(baseline_records, args.classes)
+    skipped_classes = [cls for cls in args.classes if cls not in qualified_classes]
+    gate_summary = {
+        "policy": "per-class gate must pass for every seed before that class enters LOO",
+        "thresholds": {
+            "min_queries_per_membership_label": args.gate_min_queries_per_label,
+            "min_class_auc": args.gate_min_class_auc,
+            "min_class_balanced_accuracy": args.gate_min_class_balanced_accuracy,
+        },
+        "requested_classes": list(args.classes),
+        "qualified_classes": qualified_classes,
+        "skipped_classes": skipped_classes,
+        "by_seed": {
+            seed: record["attack_gate"] for seed, record in baseline_records.items()
+        },
+    }
+    json_dump(out_dir / "attack_gate_summary.json", gate_summary)
+
+    if args.enforce_attack_gate and not qualified_classes:
+        failure_summary = {
+            "status": "stopped_attack_gate_no_qualified_class",
+            "split_sha256": split_hash,
+            "attack_gate": gate_summary,
+            "elapsed_seconds": time.time() - started,
+        }
+        json_dump(out_dir / "experiment_summary.json", failure_summary)
+        raise RuntimeError(
+            "Attack gate stopped LOO: no requested class passed on every seed. "
+            f"See {out_dir / 'attack_gate_summary.json'}")
+
+    loo_classes = qualified_classes if args.enforce_attack_gate else list(args.classes)
+    if skipped_classes and args.enforce_attack_gate:
+        LOGGER.warning(
+            "Skipping unqualified classes: %s; continuing qualified classes: %s",
+            [CLASS_NAMES[c] for c in skipped_classes],
+            [CLASS_NAMES[c] for c in loo_classes])
+
+    # ------------------------------------------------------------------
+    # Phase B: complete no-op replay through Stage 1 and Stage 2.
+    # ------------------------------------------------------------------
+    noop_records: List[Mapping[str, object]] = []
+    for seed in args.seeds:
+        context = baseline_contexts[seed]
+        interface0 = context["interface"]
+        baseline_probabilities = context["attack_probabilities"]
 
         for replay in range(args.noop_replays):
             noop_path = out_dir / "checkpoints" / f"shadow_{args.affected_shadow}_noop_seed{seed}_r{replay}.pt"
@@ -868,15 +1098,87 @@ def main() -> None:
             mask = interface0["shadow_id"] == args.affected_shadow
             noop_x = get_predictions(noop_model, X[interface0["raw_index"][mask]])
             baseline_x = interface0["x"][mask]
+            stage1_abs = np.abs(noop_x - baseline_x)
+            noop_interface_x = replace_affected_vectors(
+                interface0, noop_model, X, args.affected_shadow)
+            _, noop_probabilities = evaluate_attack_condition(
+                noop_interface_x, interface0["membership"], interface0["classes"],
+                target_queries, args.classes, seed, args, return_probabilities=True)
+            stage2_by_class = {}
+            for cls in args.classes:
+                key = str(cls)
+                difference = np.abs(
+                    noop_probabilities[key] - baseline_probabilities[key])
+                stage2_by_class[key] = {
+                    "class_name": CLASS_NAMES.get(cls, str(cls)),
+                    "max_abs": float(difference.max()),
+                    "mean_abs": float(difference.mean()),
+                    "exact": bool(np.array_equal(
+                        noop_probabilities[key], baseline_probabilities[key])),
+                }
+            stage1_max_abs = float(stage1_abs.max())
+            stage2_max_abs = float(max(
+                row["max_abs"] for row in stage2_by_class.values()))
             noop_records.append({
                 "seed": seed, "replay": replay,
-                "mean_l1": float(np.abs(noop_x - baseline_x).sum(axis=1).mean()),
-                "max_abs": float(np.abs(noop_x - baseline_x).max()),
-                "passed_exact_replay": bool(np.array_equal(noop_x, baseline_x)),
+                "tolerance": args.noop_tolerance,
+                "stage1_mean_l1": float(stage1_abs.sum(axis=1).mean()),
+                "stage1_max_abs": stage1_max_abs,
+                "stage1_exact": bool(np.array_equal(noop_x, baseline_x)),
+                "stage2_by_class": stage2_by_class,
+                "stage2_max_abs": stage2_max_abs,
+                "stage2_exact_all_classes": bool(all(
+                    row["exact"] for row in stage2_by_class.values())),
+                "passed": bool(
+                    stage1_max_abs <= args.noop_tolerance
+                    and stage2_max_abs <= args.noop_tolerance),
             })
-        json_dump(out_dir / "no_op_replays.json", noop_records)
+    json_dump(out_dir / "no_op_replays.json", noop_records)
 
-        for patient in candidates:
+    noop_passed = bool(noop_records) and all(r["passed"] for r in noop_records)
+    if args.enforce_noop_gate and not noop_passed:
+        failure_summary = {
+            "status": "stopped_noop_gate",
+            "split_sha256": split_hash,
+            "attack_gate": gate_summary,
+            "no_op_replays": noop_records,
+            "elapsed_seconds": time.time() - started,
+        }
+        json_dump(out_dir / "experiment_summary.json", failure_summary)
+        raise RuntimeError(
+            "No-op gate stopped LOO: Stage-1 or Stage-2 replay exceeded "
+            f"tolerance {args.noop_tolerance}. See {out_dir / 'no_op_replays.json'}")
+
+    if args.baseline_only:
+        baseline_only_summary = {
+            "status": "baseline_qualification_complete",
+            "split_sha256": split_hash,
+            "device": str(DEVICE),
+            "attack_gate": gate_summary,
+            "loo_classes_if_resumed": loo_classes,
+            "no_op_replays": noop_records,
+            "elapsed_seconds": time.time() - started,
+            "next_step": "rerun the same output directory without --baseline_only",
+        }
+        json_dump(out_dir / "experiment_summary.json", baseline_only_summary)
+        LOGGER.info("Baseline qualification complete. Outputs: %s", out_dir)
+        return
+
+    # ------------------------------------------------------------------
+    # Phase C: patient LOO only for qualified classes.
+    # ------------------------------------------------------------------
+    eligible_candidates = [
+        patient for patient in candidates
+        if int(patient["oct_class"]) in loo_classes
+    ]
+    all_results: List[Mapping[str, object]] = []
+    for seed in args.seeds:
+        context = baseline_contexts[seed]
+        interface0 = context["interface"]
+        baseline_shadow_metrics = context["shadow_metrics"]
+        baseline_attack = subset_attack_metrics(context["attack"], loo_classes)
+
+        for patient in eligible_candidates:
             pid = int(patient["patient_id"])
             run_path = out_dir / "runs" / f"seed{seed}_patient{pid}.json"
             if run_path.exists() and not args.overwrite:
@@ -909,13 +1211,13 @@ def main() -> None:
                 "J00": baseline_attack,
                 "J10": evaluate_attack_condition(
                     interface1_x, interface0["membership"], interface0["classes"],
-                    target_queries, args.classes, seed, args),
+                    target_queries, loo_classes, seed, args),
                 "J01": evaluate_attack_condition(
                     interface0["x"], membership1, interface0["classes"],
-                    target_queries, args.classes, seed, args),
+                    target_queries, loo_classes, seed, args),
                 "J11": evaluate_attack_condition(
                     interface1_x, membership1, interface0["classes"],
-                    target_queries, args.classes, seed, args),
+                    target_queries, loo_classes, seed, args),
             }
             result = {
                 "seed": seed,
@@ -931,7 +1233,8 @@ def main() -> None:
                 "interface_drift": drift_summary(
                     interface0, interface1_x, pid, groups, args.affected_shadow),
                 "conditions": conditions,
-                "endpoint_deltas": endpoint_deltas(conditions),
+                "endpoint_deltas": endpoint_deltas(
+                    conditions, int(patient["oct_class"])),
             }
             json_dump(run_path, result)
             all_results.append(result)
@@ -942,11 +1245,23 @@ def main() -> None:
         "split_sha256": split_hash,
         "device": str(DEVICE),
         "n_patient_seed_runs": len(all_results),
+        "n_selected_patients": len(candidates),
+        "n_loo_patients": len(eligible_candidates),
+        "qualified_classes": loo_classes,
+        "skipped_classes": skipped_classes if args.enforce_attack_gate else [],
+        "attack_gate": gate_summary,
         "baseline_by_seed": baseline_records,
         "no_op_replays": noop_records,
         "elapsed_seconds": time.time() - started,
-        "primary_estimand": "macro J11 - J00 (full patient LOO)",
-        "mechanistic_estimand": "macro J10 - J00 (continuous value pathway)",
+        "primary_estimand": (
+            "patient-matched OCT-class cross-entropy J11 - J00 "
+            "(full patient LOO)"),
+        "mechanistic_estimand": (
+            "patient-matched OCT-class cross-entropy J10 - J00 "
+            "(continuous value pathway)"),
+        "secondary_endpoints": [
+            "matched-class balanced accuracy", "matched-class accuracy",
+            "matched-class AUC", "macro metrics"],
     }
     analysis = aggregate_analysis(all_results, baseline_records, noop_records)
     final["analysis"] = analysis
