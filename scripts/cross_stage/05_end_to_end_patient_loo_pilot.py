@@ -118,6 +118,23 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--overwrite", action="store_true",
                     help="recompute completed patient/seed result JSON files")
     ap.add_argument("--deterministic", action=argparse.BooleanOptionalAction, default=True)
+    # ---- formal-experiment extensions (defaults reproduce the pilot exactly) ----
+    ap.add_argument("--removal_epochs", default=None,
+                    help=("'start:end' (0-based, end exclusive) epochs in which the patient is "
+                          "removed; default = all epochs.  '25:50' = late-half deletion, "
+                          "'0:25' = early-half deletion.  Because training is bit-deterministic, "
+                          "epochs before `start` are identical to the paired baseline, so the "
+                          "trajectory is truncated at a node without saving optimizer state."))
+    ap.add_argument("--attack_seed_reps", type=int, default=1,
+                    help=("train the Stage-2 attack under this many attack seeds per condition "
+                          "and average the metrics (Stage-2 noise reduction); per-seed values "
+                          "are stored too.  1 = pilot behaviour."))
+    ap.add_argument("--placebo_replays", type=int, default=0,
+                    help=("per seed, retrain Stage 1 with NO deletion but a different dropout/"
+                          "trajectory RNG stream, and evaluate J00-style attack metrics; gives the "
+                          "noise floor for the paired delta-CE against which patient effects are judged"))
+    ap.add_argument("--save_epoch_checkpoints", type=int, nargs="*", default=[],
+                    help="epochs (1-based, after completion) at which baseline Stage-1 weights are saved")
     return ap.parse_args()
 
 
@@ -186,20 +203,35 @@ def train_classifier_from_orders(
     weight_decay: float,
     deterministic: bool,
     excluded_indices: Sequence[int] = (),
+    removal_window: Tuple[int, int] | None = None,
+    trajectory_noise_seed: int | None = None,
+    epoch_checkpoint_dir: Path | None = None,
+    epoch_checkpoints: Sequence[int] = (),
 ) -> Tuple[torch.nn.Module, Dict[str, float]]:
     """Train SmallCNN using a recorded baseline raw-index order.
 
-    A LOO run removes the excluded raw indices from every recorded epoch.  All
-    remaining examples keep the same relative order as the paired baseline.
+    A LOO run removes the excluded raw indices from every recorded epoch (or
+    only from epochs inside ``removal_window`` = (start, end)).  All remaining
+    examples keep the same relative order as the paired baseline.
+
+    ``trajectory_noise_seed`` re-seeds torch AFTER model initialisation so that
+    only the dropout / trajectory RNG stream changes (placebo replay).
     """
     seed_everything(seed, deterministic)
     n_classes = int(np.max(y)) + 1
     model = build_model("cnn", X.shape[1], n_hidden, n_classes)
+    if trajectory_noise_seed is not None:
+        torch.manual_seed(int(trajectory_noise_seed))
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(int(trajectory_noise_seed))
     optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     criterion = nn.CrossEntropyLoss()
-    excluded = set(int(v) for v in excluded_indices)
+    excluded_all = set(int(v) for v in excluded_indices)
 
-    for base_order in train_orders:
+    for epoch, base_order in enumerate(train_orders):
+        in_window = (removal_window is None or
+                     removal_window[0] <= epoch < removal_window[1])
+        excluded = excluded_all if in_window else set()
         if excluded:
             order = np.asarray([v for v in base_order if int(v) not in excluded], dtype=np.int64)
         else:
@@ -214,9 +246,14 @@ def train_classifier_from_orders(
             loss = criterion(model(xb), yb)
             loss.backward()
             optimizer.step()
+        if epoch_checkpoint_dir is not None and (epoch + 1) in set(int(e) for e in epoch_checkpoints):
+            save_model(epoch_checkpoint_dir / f"epoch{epoch + 1:03d}.pt", model,
+                       {"seed": seed, "epoch": epoch + 1,
+                        "excluded_indices": sorted(excluded_all),
+                        "optimizer_state": optimizer.state_dict()})
 
     effective_train = np.asarray(
-        [v for v in train_orders[0] if int(v) not in excluded], dtype=np.int64)
+        [v for v in train_orders[0] if int(v) not in excluded_all], dtype=np.int64)
     metrics = {
         "train_accuracy": classification_accuracy(model, X, y, effective_train),
         "heldout_accuracy": classification_accuracy(model, X, y, eval_indices),
@@ -486,18 +523,30 @@ def evaluate_attack_condition(
         if len(np.unique(train_membership[tr])) != 2 or len(np.unique(target["membership"][te])) != 2:
             raise RuntimeError(f"Class {cls} does not contain both membership labels")
         attack_seed = int(seed * 100 + cls)
-        model = train_attack_model_deterministic(
-            train_x[tr], train_membership[tr], attack_seed,
-            args.attack_epochs, args.attack_lr, args.attack_batch_size,
-            n_hidden=64, deterministic=args.deterministic)
-        prob = predict_attack_prob(model, target["x"][te])
-        probabilities[str(cls)] = prob
+        reps = max(1, int(getattr(args, "attack_seed_reps", 1)))
+        rep_metrics = []
+        for rep in range(reps):
+            rep_seed = attack_seed if rep == 0 else attack_seed + 10007 * rep
+            model = train_attack_model_deterministic(
+                train_x[tr], train_membership[tr], rep_seed,
+                args.attack_epochs, args.attack_lr, args.attack_batch_size,
+                n_hidden=64, deterministic=args.deterministic)
+            prob = predict_attack_prob(model, target["x"][te])
+            if rep == 0:
+                probabilities[str(cls)] = prob
+            rep_metrics.append(binary_metrics(target["membership"][te], prob))
+        numeric_keys = ("accuracy", "balanced_accuracy", "auc", "cross_entropy", "member_recall")
+        averaged = {k: float(np.mean([m[k] for m in rep_metrics])) for k in numeric_keys}
+        averaged.update({k: rep_metrics[0][k] for k in ("n_test", "n_member", "n_nonmember")})
         per_class[str(cls)] = {
             "class_name": CLASS_NAMES.get(cls, str(cls)),
             "n_train": int(tr.sum()),
             "n_train_member": int((train_membership[tr] == 1).sum()),
             "n_train_nonmember": int((train_membership[tr] == 0).sum()),
-            **binary_metrics(target["membership"][te], prob),
+            **averaged,
+            "attack_seed_reps": reps,
+            "per_rep_cross_entropy": [m["cross_entropy"] for m in rep_metrics],
+            "per_rep_auc": [m["auc"] for m in rep_metrics],
         }
     numeric = ("accuracy", "balanced_accuracy", "auc", "cross_entropy", "member_recall")
     macro = {key: float(np.mean([per_class[str(c)][key] for c in classes])) for key in numeric}
@@ -683,23 +732,40 @@ def train_or_load_stage1(
     seed: int,
     args: argparse.Namespace,
     excluded_indices: Sequence[int] = (),
+    trajectory_noise_seed: int | None = None,
+    epoch_checkpoint_dir: Path | None = None,
 ) -> Tuple[torch.nn.Module, Dict[str, float], np.ndarray]:
     orders = make_epoch_orders(train_indices, args.shadow_epochs, seed + 700000)
     if path.exists() and not args.overwrite:
         model = load_model(path, X.shape[1], 128, int(np.max(y)) + 1)
         payload = torch.load(path, map_location="cpu", weights_only=False)
         return model, dict(payload["metadata"]["metrics"]), orders
+    window = parse_removal_window(args.removal_epochs, args.shadow_epochs) if excluded_indices else None
     model, metrics = train_classifier_from_orders(
         X, y, orders, eval_indices, seed=seed, n_hidden=128,
         lr=args.shadow_lr, batch_size=args.shadow_batch_size,
         weight_decay=1e-5, deterministic=args.deterministic,
-        excluded_indices=excluded_indices)
+        excluded_indices=excluded_indices, removal_window=window,
+        trajectory_noise_seed=trajectory_noise_seed,
+        epoch_checkpoint_dir=epoch_checkpoint_dir,
+        epoch_checkpoints=args.save_epoch_checkpoints)
     save_model(path, model, {
         "seed": seed,
         "excluded_indices": list(map(int, excluded_indices)),
+        "removal_window": list(window) if window else None,
+        "trajectory_noise_seed": trajectory_noise_seed,
         "metrics": metrics,
     })
     return model, metrics, orders
+
+
+def parse_removal_window(spec: str | None, epochs: int) -> Tuple[int, int] | None:
+    if spec is None:
+        return None
+    start, end = (int(v) for v in spec.split(":"))
+    if not 0 <= start < end <= epochs:
+        raise ValueError(f"--removal_epochs {spec} must satisfy 0 <= start < end <= {epochs}")
+    return (start, end)
 
 
 def write_flat_summary(out_dir: Path, results: Sequence[Mapping[str, object]]) -> None:
@@ -942,6 +1008,12 @@ def main() -> None:
         ignored = {"overwrite", "baseline_only"}
         before = {k: v for k, v in previous.get("args", {}).items() if k not in ignored}
         now = {k: v for k, v in vars(args).items() if k not in ignored}
+        # args added after the pilot: accept when the old config lacks them and they are at default
+        new_defaults = {"removal_epochs": None, "attack_seed_reps": 1,
+                        "placebo_replays": 0, "save_epoch_checkpoints": []}
+        for key, default in new_defaults.items():
+            if key not in before and now.get(key) == default:
+                now.pop(key, None)
         if before != now:
             raise RuntimeError(
                 f"Output directory already contains a different configuration: {config_path}. "
@@ -1013,7 +1085,9 @@ def main() -> None:
         baseline_path = out_dir / "checkpoints" / f"shadow_{args.affected_shadow}_baseline_seed{seed}.pt"
         baseline_model, baseline_shadow_metrics, orders = train_or_load_stage1(
             baseline_path, X, y, affected_split["train_idx"], affected_split["test_idx"],
-            seed, args)
+            seed, args,
+            epoch_checkpoint_dir=(out_dir / "checkpoints" / f"baseline_seed{seed}_epochs"
+                                  if args.save_epoch_checkpoints else None))
         np.savez_compressed(out_dir / f"stage1_order_seed{seed}.npz", raw_index_order=orders)
 
         models = []
@@ -1135,6 +1209,42 @@ def main() -> None:
             })
     json_dump(out_dir / "no_op_replays.json", noop_records)
 
+    # ------------------------------------------------------------------
+    # Phase B2: placebo replays (no deletion, different trajectory RNG).
+    # The distribution of these deltas is the noise floor for patient deltas.
+    # ------------------------------------------------------------------
+    placebo_records: List[Mapping[str, object]] = []
+    for seed in args.seeds:
+        context = baseline_contexts[seed]
+        interface0 = context["interface"]
+        baseline_attack = subset_attack_metrics(context["attack"], loo_classes)
+        for replay in range(args.placebo_replays):
+            placebo_path = out_dir / "checkpoints" / f"shadow_{args.affected_shadow}_placebo_seed{seed}_r{replay}.pt"
+            placebo_model, placebo_metrics, _ = train_or_load_stage1(
+                placebo_path, X, y, affected_split["train_idx"], affected_split["test_idx"],
+                seed, args, trajectory_noise_seed=seed + 500000 + 1000 * (replay + 1))
+            placebo_x = replace_affected_vectors(interface0, placebo_model, X, args.affected_shadow)
+            placebo_attack = evaluate_attack_condition(
+                placebo_x, interface0["membership"], interface0["classes"],
+                target_queries, loo_classes, seed, args)
+            record = {
+                "seed": seed, "replay": replay,
+                "stage1_delta_heldout_accuracy": float(
+                    placebo_metrics["heldout_accuracy"] - context["shadow_metrics"]["heldout_accuracy"]),
+                "interface_drift": drift_summary(
+                    interface0, placebo_x, -1, groups, args.affected_shadow),
+                "per_class_delta": {
+                    cls: {key: float(placebo_attack["per_class"][cls][key] - baseline_attack["per_class"][cls][key])
+                          for key in ("cross_entropy", "auc", "balanced_accuracy", "accuracy")}
+                    for cls in placebo_attack["per_class"]
+                },
+            }
+            placebo_records.append(record)
+            LOGGER.info("placebo seed=%d replay=%d delta CE by class: %s", seed, replay,
+                        {c: round(v["cross_entropy"], 6) for c, v in record["per_class_delta"].items()})
+    if placebo_records:
+        json_dump(out_dir / "placebo_replays.json", placebo_records)
+
     noop_passed = bool(noop_records) and all(r["passed"] for r in noop_records)
     if args.enforce_noop_gate and not noop_passed:
         failure_summary = {
@@ -1252,6 +1362,9 @@ def main() -> None:
         "attack_gate": gate_summary,
         "baseline_by_seed": baseline_records,
         "no_op_replays": noop_records,
+        "placebo_replays": placebo_records,
+        "removal_epochs": args.removal_epochs,
+        "attack_seed_reps": args.attack_seed_reps,
         "elapsed_seconds": time.time() - started,
         "primary_estimand": (
             "patient-matched OCT-class cross-entropy J11 - J00 "
