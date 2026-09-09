@@ -78,7 +78,8 @@ def main() -> None:
             vals, counts = np.unique(y[pidx], return_counts=True)
             cls = int(vals[counts.argmax()])
             if cls in per_class:
-                per_class[cls].append({"patient_id": int(pid), "n_images": int(len(pidx))})
+                per_class[cls].append({"patient_id": int(pid), "n_images": int(len(pidx)),
+                                       "raw_indices": sorted(pidx.tolist())})
         eligible[sid] = {}
         table[f"shadow_{sid}"] = {}
         for cls, rows in per_class.items():
@@ -113,17 +114,22 @@ def main() -> None:
             used.update(r["patient_id"] for r in take)
             panels[sid][pilot.CLASS_NAMES[cls]] = take
 
+    split_hash = pilot.sha256_file(Path(split_path))
     report = {
-        "split_path": str(split_path), "split_validation": validation,
+        "split_path": str(split_path), "split_sha256": split_hash, "split_validation": validation,
         "args": vars(args), "eligibility_table": table,
         "min_eligible_per_class_by_shadow": {str(s): v for s, v in scarcity.items()},
         "proposed_affected_shadows": chosen,
         "proposed_patient_panels_disjoint_across_shadows": {str(s): v for s, v in panels.items()},
         "shortfall": shortfall,
+        "panel_complete": not shortfall,
+        "consumed_by": "05 --patient_panel_json <this file> --affected_shadow <sid> [--require_complete_panel]",
         "note": ("selection uses split metadata and selection_seed only; freeze this file before "
                  "training. Patients are unique across shadows to avoid pseudoreplication."),
     }
     pilot.json_dump(out_dir / "eligibility_preflight.json", report)
+    if shortfall:
+        print("WARNING: panel incomplete:", json.dumps(shortfall))
     print(json.dumps({k: report[k] for k in ("eligibility_table", "proposed_affected_shadows", "shortfall")}, indent=2))
     print("wrote", out_dir / "eligibility_preflight.json")
 

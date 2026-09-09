@@ -1,6 +1,6 @@
 # OCT MIA 跨阶段实验：正确性审计 + 正式实验设计（含 score 实现）
 
-日期：2026-09-09（v2，已并入第二轮审计 `OCT_Cross_Stage_Formal_Audit_and_Design_20260909.md` 的修正）
+日期：2026-09-09（v3：v2 并入第二轮审计，v3 并入第三轮复核的 5 个必修项）
 依据：`continue_pathway2.pdf`（Eq. 1–87）、`HANDOFF_End_to_End_Patient_LOO_05_COMPLETE_CN_2026-09-09.md`、GitHub `shan927150/oct2` 代码（commit `21ca1b2`）
 状态：审计完成；脚本 05（扩展）/ 06 / 07 / 08 / tests；正式实验分 Phase 0–4
 
@@ -16,7 +16,7 @@
 | Blocker C：CG 假设 SPD，$H_s$ 可能不定 | **成立** | CG 加非正曲率检测（$p^{\top}Ap\le0$ 立即停止并标记）、Lanczos 估计阻尼算子的 $\lambda_{\min},\lambda_{\max}$、残差硬 gate（`--cg_fail_tol`，默认 $10^{-3}$）、`--damping_shadow_grid` 报告 score 排名对 $\gamma_s$ 的稳定性；不可靠行在 `analyze` 中被剔除 |
 | Blocker D：partial window 仍改 membership | **成立** | 05 新增 `--window_membership value_only`（默认）：partial exposure（窗口或 dose）只算 $J_{00},J_{10}$，$J_{01},J_{11}$ 置空；06/07 相应容错；metadata 记录 exposure epochs |
 | Blocker E：filter+rechunk 不是 Eq. 62–74 的固定 $B_t$ | **成立**（与 v1 §1.2-A 同一问题，但审计给的解法更好：消除而不是测量这项噪声） | 05 新增 `--deletion_mode fixed_mask`（正式实验 primary）：batch 张量、forward、dropout 抽样与 baseline 逐位相同，被删行 loss 权重 0，分母不变。测试 E 验证：RNG 状态与 baseline 完全对齐、结果与被删行内容无关；`filter_rechunk` 保留为 sensitivity。同时得到免费的 dose-response：`--deletion_weight α` |
-| 3 个 seed 混合了 Stage 1 与 attack 随机性 | **成立** | 05 的 `--attack_seed_reps K` 就是 crossed 设计（每个 Stage-1 seed 下 K 个独立 attack seed），原始值不预先平均；06 输出 combined variance 并注明；07 的 `stage2_only_noise` 给 $\hat\sigma_A^2$，二者相减得 $\hat\sigma_S^2$ |
+| 3 个 seed 混合了 Stage 1 与 attack 随机性 | **成立** | 05 的 `--attack_seed_reps K` 给每个 Stage-1 seed 下 K 个独立 attack seed（nested；strict crossed 见 v3 的 `--attack_seeds`），原始值不预先平均；06 输出 combined variance 并注明；07 的 `stage2_only_noise` 给 $\hat\sigma_A^2$，二者相减得 $\hat\sigma_S^2$ |
 | "placebo" 不是严格 null | **成立** | 改名 `--trajectory_replays` / `trajectory_sensitivity_replays.json`，文档改称 trajectory-sensitivity distribution |
 | `J00_recomputed` 应硬断言 | **成立** | 07 `--j00_tol 1e-6`，逐 attack seed 比较，不满足即 raise |
 | JVP clamp+renorm 不是纯线性 | **成立** | 07 同时保存 raw JVP、projected 版本、`row_clip_rate`、`mean_projection_l1`；$L2_{lin}$ 用纯线性 $h^{\top}\Delta\theta$ |
@@ -27,6 +27,21 @@
 | GitHub HEAD 没有 06/07 | **成立** | 已在本地分支 `cross-stage-formal-design` 提交；推送需要仓库授权 |
 
 结论：第二轮审计的 blocker 里 B、C、D、E 是真的并已修；A 在代码层面不存在（已用测试证明），但显式化处理无害。
+
+## 附录 B：第三轮复核的 5 个必修项（v3 全部处理）
+
+| 复核意见 | 是否成立 | v3 处理 | 验证 |
+|---|---|---|---|
+| 1. dose/window 的 L3 与 truth 不匹配：07 没读 `deletion_weight` / `removal_epochs` | **成立** | 07 读取 05 的 config：dose 时 `score_remove`、`dtheta_hat`（进 JVP 前）、`frozen_h`、`frozen_self`、damping-grid 列全部乘 $\alpha$，行内记录 `l3_estimand = "alpha*(1/n_s) Σ w^T g_i"`；partial window 时 L3 / frozen 列全部为 `None`，`l3_estimand = not_applicable`（需要 Eq. 42+74 的 trajectory score），只保留 L1/L2（真 $P_1$ / 真 $\Delta\theta$）与 actual | 合成 dose 与 late run 的 07 输出列检查 |
+| 2. `cg_reliable` 没用 Lanczos，且 score 与 dtheta 的 solve 混在一起 | **成立** | 拆成 `cg_score_reliable = lanczos_spd ∧ 无负曲率 ∧ 残差达标`（管 L3_lin）与 `cg_dtheta_reliable`（管 L3_retrain / hybrid）；attack 侧新增 `damped_eig_min = λ_min(H_A)+γ_A`、condition number、solve 残差与 `attack_solve_reliable` gate；`analyze` 按列分别过滤 | 合成 run：Lanczos $\lambda_{\min}<0$ 时 score 行被标 unreliable |
+| 3. 08 的 panel 没被 05 消费 | **成立** | 05 新增 `--patient_panel_json / --panel_shadow / --require_complete_panel`；`load_patient_panel()` 硬校验 split sha256、affected shadow、每个病人的 raw indices 与 split 完全一致、class、图像数区间（按当前 bounds）、跨 shadow 不重复、shortfall；通过后写入 `selected_patients.json`（含 `panel_validation`）；08 现在记录 `split_sha256`、每病人 `raw_indices`、`panel_complete` | 测试 G：接受合法 panel；hash / 跨 shadow 重复 / shortfall / raw-index / bounds 五种违规均 raise；合成链 08→05 实跑 |
+| 4. attack seed 是 nested 不是 crossed | **成立**（v2 文档措辞错误） | 05 新增 `--attack_seeds 5101 5102 ...`：固定 panel 对每个 Stage-1 seed 完全相同（strict crossed）；默认仍是 nested（pilot 行为）。`attack_rep_seeds()` / `attack_seed_design()` 由 05 定义、07 直接调用，每个 condition 的 JSON 记录 `attack_seeds` 与 `attack_seed_design`；`frozen_self` 也改为对所有 attack seed 平均 | 测试 F |
+| 5. value-only 的 06 class summary 出 NaN；05 partial run 的 primary 文案与 metadata 不对 | **成立** | 06：全缺失 endpoint 输出 `None`，JSON `allow_nan=False`，`-W error` 下无警告；05：`experiment_config.estimands.primary` 与 `experiment_summary.primary_estimand` 按是否有 J01/J11 切换，新增 `primary_endpoint_column` 与 CSV 列 `primary_endpoint`；partial run 的 `n_train_images`/`train_accuracy` 按"病人实际被训练过"用全量训练集，另给 `train_accuracy_excluding_patient`、`patient_images_accuracy`、`n_train_images_excluding_patient` | `-W error` 复跑 06 |
+| 交付包缺 synthetic 运行证据；patch 头是 `/tmp` | **成立** | zip 内新增 `synthetic_validation/`：命令脚本、stdout、torch/numpy 版本、关键 JSON 与 sha256 manifest；patch 改为 `git diff 21ca1b2` 生成的 `a/ b/` 头 | — |
+
+仍未做（不影响 full-horizon 主链）：Adam trajectory score（Eq. 42+74）。在它实现前，early/late 只能作为真实效应诊断，不能称为 temporal score 验证。
+
+另外补一个 v2 遗留的自我修正：v2 附录 A 把 `--attack_seed_reps` 称为 "crossed 设计"是错的，那是 nested；v3 的 `--attack_seeds` 才是 crossed。
 
 ---
 
@@ -136,7 +151,7 @@ $$
 
 | 噪声源 | 控制变量 | 成本 | 处理 |
 |---|---|---|---|
-| Stage 2 attack 训练随机性 $\sigma_A^2$ | attack seed $k$ | 每次 ~1–2 s（GPU） | `--attack_seed_reps K`：每个 Stage-1 seed 下 K 个独立 attack seed（crossed），**原始值逐 seed 保存**（per-rep CE/AUC + per-query probabilities），07 的 score 与 truth 逐 attack seed 匹配后再平均 |
+| Stage 2 attack 训练随机性 $\sigma_A^2$ | attack seed $k$ | 每次 ~1–2 s（GPU） | 正式实验用 `--attack_seeds 5101 … 510K`（固定 panel，对每个 Stage-1 seed 相同 = strict crossed）；`--attack_seed_reps K` 是 nested 独立复制（pilot 行为）。**原始值逐 seed 保存**（per-rep CE/AUC + per-query probabilities），07 的 score 与 truth 逐 attack seed 匹配后再平均 |
 | Stage 1 trajectory $\sigma_S^2$（init / order / dropout） | Stage 1 seed $r$ | 每次 ~15–20 s | R 由 variance components 决定，见下；fixed_mask 已去掉 batch/dropout 重排噪声 |
 | 病人抽样 | patient set | — | 以 `08_eligibility_preflight.py` 冻结的面板为准；seed 重复不能替代病人数 |
 
@@ -195,15 +210,16 @@ python scripts/cross_stage/05_end_to_end_patient_loo_pilot.py \
   --min_patient_images 5 --max_patient_images 15 --seeds 42 43 44 45 46 \
   --shadow_epochs 50 --attack_epochs 50 --noop_replays 1 --noop_tolerance 0 \
   --enforce_attack_gate --enforce_noop_gate \
-  --deletion_mode fixed_mask --attack_seed_reps 10 --trajectory_replays 3 \
-  --save_epoch_checkpoints 25 30 35 40 45 50 --baseline_only
+  --deletion_mode fixed_mask --attack_seeds 5101 5102 5103 5104 5105 5106 5107 5108 5109 5110 \
+  --trajectory_replays 3 --save_epoch_checkpoints 25 30 35 40 45 50 --baseline_only
 ```
+（正式扩展时加 `--patient_panel_json results/cross_stage_patient_loo_formal_40k/eligibility_preflight.json --require_complete_panel`，并保证 `--output_dir` 与 preflight 相同，使 split sha256 一致。）
 产出 `trajectory_sensitivity_replays.json`、每 seed 的 `baseline_seed*_attack_probs.npz`（K 个 attack seed 的 per-query 概率）；epoch checkpoint（含 Adam state、RNG）为 Adam-trajectory score 与 Phase 3 备用。
 
 **Phase 2 — 正式 LOO（同目录去掉 `--baseline_only`）**
 - 同样 8 人先跑，与 pilot_v3 对照（新 seeds 45、46 是 replication）。
-- 再扩到 `--n_patients 32`（每类 16），需要新目录；若 DME/DRUSEN 合格病人不足，把 `--max_patient_images` 放到 20 并在报告中把图像数作为协变量。
-- 增加 affected shadow：对 shadow 2、3 各跑一遍（各自新目录），要求同一选人规则。
+- 正式病人数以 Phase 0b 的 preflight 为准（目标 ≈30/类，分布在 ≥3 个 affected shadow），05 用 `--patient_panel_json ... --require_complete_panel` 消费冻结面板，不再调用 `choose_patients()`；若合格病人不足，先改 preflight 的 bounds 再重新冻结，并把图像数作为协变量。
+- 每个 affected shadow 一个输出目录，同一 preflight 文件、同一 split；病人跨 shadow 不重复由 05 硬校验。
 - 估算：每个 patient-seed 4 次 attack 训练 × K=10 + 1 次 Stage 1 ≈ 60 s → 32 人 × 5 seeds ≈ 2.7 h/shadow。
 - 每个新目录跑完后立即跑 06、07（07 支持 `--seeds` 子集）。
 
@@ -214,9 +230,10 @@ for a in 0.1 0.25 0.5; do
     --output_dir results/..._dose_$a --deletion_mode fixed_mask --deletion_weight $a
 done
 ```
-病人 loss 权重变为 $1-\alpha$，只评估 $J_{00},J_{10}$（partial exposure 自动 value_only）。比较 $\Delta^{\text{value}}(\alpha)$ 与 $\alpha\cdot S^{\text{remove}}$：小 $\alpha$ 对齐而 $\alpha=1$ 失败 ⇒ score 局部正确、hard deletion 非线性（deleted rows JS≈0.35 就是这个信号），可考虑 integrated influence；小 $\alpha$ 就不对齐 ⇒ 回到 ladder 定位。
+病人 loss 权重变为 $1-\alpha$，只评估 $J_{00},J_{10}$（partial exposure 自动 value_only）。07 读取 $\alpha$ 后自动输出 $\alpha\cdot S^{\text{remove}}$（`l3_estimand` 字段注明）。比较 $\Delta^{\text{value}}(\alpha)$ 与 $\alpha\cdot S^{\text{remove}}$：小 $\alpha$ 对齐而 $\alpha=1$ 失败 ⇒ score 局部正确、hard deletion 非线性（deleted rows JS≈0.35 就是这个信号），可考虑 integrated influence；小 $\alpha$ 就不对齐 ⇒ 回到 ladder 定位。
 
 **Phase 3 — Training-stage 节点截断（"前一半 + 后一半 + 结合"），只在 ladder 指向 Stage 1 trajectory 时做**
+在 Adam trajectory score（Eq. 42+74）实现之前，这一步只能得到 early/late/full 的**真实效应**及其非可加残差，以及 L1/L2（真 $P_1$ / 真 $\Delta\theta$）；07 对 partial-window run 会把 L3 置为 `not_applicable`，不要把 full-horizon 的静态 score 拿来和 early/late truth 比。
 ```bash
 # late-half deletion: 病人只在 epoch 25-49 被删；epoch 0-24 与 baseline 逐位相同
 python scripts/cross_stage/05_end_to_end_patient_loo_pilot.py ... \

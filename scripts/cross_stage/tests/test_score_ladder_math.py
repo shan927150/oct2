@@ -185,21 +185,94 @@ def test_fixed_mask_rng_alignment():
               weight_decay=0.0, deterministic=True)
 
     def run(mode, excl, X_=X):
-        m, _ = pilot.train_classifier_from_orders(X_, y, orders, excluded_indices=excl, deletion_mode=mode, **kw)
-        return ladder.flatten([p.detach() for p in m.parameters()]).clone(), torch.get_rng_state().clone()
+        m, met = pilot.train_classifier_from_orders(X_, y, orders, excluded_indices=excl, deletion_mode=mode, **kw)
+        return ladder.flatten([p.detach() for p in m.parameters()]).clone(), met["post_train_rng_sha256"]
 
     base, rng_base = run("fixed_mask", [])
     base_f, _ = run("filter_rechunk", [])
     assert torch.equal(base, base_f), "no-deletion path must be identical in both modes"
     loo, rng_loo = run("fixed_mask", [3, 17])
-    assert torch.equal(rng_base, rng_loo), "fixed_mask must leave the RNG stream aligned with baseline"
+    assert rng_base == rng_loo, "fixed_mask must leave the RNG stream aligned with baseline"
     X2 = X.copy(); X2[[3, 17]] = rng.normal(size=(2, 1, 16, 16)).astype(np.float32)
     loo2, _ = run("fixed_mask", [3, 17], X2)
     assert torch.equal(loo, loo2), "fixed_mask result must not depend on the removed rows' content"
     assert not torch.equal(loo, base), "deletion must change the model"
     _, rng_filter = run("filter_rechunk", [3, 17])
     print(f"[E] fixed_mask: RNG aligned, content-independent; filter_rechunk RNG aligned with baseline: "
-          f"{torch.equal(rng_base, rng_filter)}")
+          f"{rng_base == rng_filter}")
+
+
+def _load_pilot():
+    import importlib.util as iu
+    spec5 = iu.spec_from_file_location("pilot05", HERE.parent / "05_end_to_end_patient_loo_pilot.py")
+    pilot = iu.module_from_spec(spec5); sys.modules["pilot05"] = pilot; spec5.loader.exec_module(pilot)
+    return pilot
+
+
+def test_attack_seed_design():
+    """--attack_seeds gives the SAME panel for every Stage-1 seed (crossed); the default is nested."""
+    import argparse
+    pilot = _load_pilot()
+    nested = argparse.Namespace(attack_seeds=None, attack_seed_reps=3)
+    crossed = argparse.Namespace(attack_seeds=[5101, 5102, 5103], attack_seed_reps=1)
+    n42, n43 = pilot.attack_rep_seeds(42, 1, nested), pilot.attack_rep_seeds(43, 1, nested)
+    c42, c43 = pilot.attack_rep_seeds(42, 1, crossed), pilot.attack_rep_seeds(43, 1, crossed)
+    assert n42 != n43 and len(n42) == 3 and n42[0] == 4201, (n42, n43)
+    assert c42 == c43 == [5101, 5102, 5103]
+    assert pilot.attack_seed_design(nested).startswith("nested") and pilot.attack_seed_design(crossed).startswith("crossed")
+    print(f"[F] attack seed design: nested {n42} vs {n43}; crossed {c42} == {c43}")
+
+
+def test_patient_panel_handshake(tmp_path=None):
+    """05 must accept a preflight panel only when split hash, shadow, raw indices, class,
+    image-count bounds, cross-shadow uniqueness and shortfall all check out."""
+    import argparse, json, tempfile
+    pilot = _load_pilot()
+    rng = np.random.default_rng(3)
+    n = 60
+    y = rng.integers(0, 4, size=n); groups = np.repeat(np.arange(15), 4)      # 15 patients x 4 images
+    y[:] = np.repeat(rng.integers(0, 4, size=15), 4)                          # patient-consistent class
+    train0 = np.arange(0, 28); train1 = np.arange(28, 60)                     # shadow 0: patients 0-6, shadow 1: 7-14
+    splits = {"shadow_models": [{"train_idx": train0.tolist(), "test_idx": []},
+                                {"train_idx": train1.tolist(), "test_idx": []}]}
+    def panel_for(sid, ids):
+        out = {}
+        for pid in ids:
+            cls = int(y[groups == pid][0]); cname = pilot.CLASS_NAMES[cls]
+            out.setdefault(cname, []).append({"patient_id": int(pid), "n_images": 4,
+                                              "raw_indices": np.where(groups == pid)[0].tolist()})
+        return out
+    ids1 = [7, 8, 9]; cls_ok = sorted({int(y[groups == p][0]) for p in ids1})
+    panel = {"split_sha256": "abc", "proposed_affected_shadows": [1, 0],
+             "proposed_patient_panels_disjoint_across_shadows": {"1": panel_for(1, ids1), "0": panel_for(0, [0, 1])},
+             "shortfall": {}}
+    tmp = Path(tempfile.mkdtemp()) / "panel.json"; tmp.write_text(json.dumps(panel))
+    args = argparse.Namespace(affected_shadow=1, panel_shadow=None, require_complete_panel=True,
+                              classes=cls_ok, min_patient_images=1, max_patient_images=10)
+    cands, rep = pilot.load_patient_panel(tmp, args, "abc", splits, y, groups)
+    assert sorted(c["patient_id"] for c in cands) == ids1 and rep["n_patients"] == 3
+    # each rejection path must raise
+    bad_cases = []
+    for mutate, label in [
+        (lambda p: p.update(split_sha256="zzz"), "split hash"),
+        (lambda p: p["proposed_patient_panels_disjoint_across_shadows"]["0"].setdefault(list(panel_for(1, ids1))[0], []).append(
+            dict(panel_for(1, ids1)[list(panel_for(1, ids1))[0]][0])), "cross-shadow duplicate"),
+        (lambda p: p.update(shortfall={"shadow_1_class_1": 2}), "shortfall"),
+        (lambda p: list(p["proposed_patient_panels_disjoint_across_shadows"]["1"].values())[0][0].update(raw_indices=[0, 1, 2, 3]), "raw indices"),
+    ]:
+        p2 = json.loads(json.dumps(panel)); mutate(p2); tmp.write_text(json.dumps(p2))
+        try:
+            pilot.load_patient_panel(tmp, args, "abc", splits, y, groups); bad_cases.append(label)
+        except RuntimeError:
+            pass
+    assert not bad_cases, f"panel validation did not reject: {bad_cases}"
+    tmp.write_text(json.dumps(panel))
+    args2 = argparse.Namespace(**{**vars(args), "max_patient_images": 3})
+    try:
+        pilot.load_patient_panel(tmp, args2, "abc", splits, y, groups); raise AssertionError("bounds not enforced")
+    except RuntimeError:
+        pass
+    print("[G] patient panel handshake: accepts valid panel, rejects hash/duplicate/shortfall/raw-index/bounds violations")
 
 
 if __name__ == "__main__":
@@ -208,4 +281,6 @@ if __name__ == "__main__":
     test_detach_equivalence_nonstationary()
     test_cg_curvature_gate()
     test_fixed_mask_rng_alignment()
+    test_attack_seed_design()
+    test_patient_panel_handshake()
     print("all checks passed")

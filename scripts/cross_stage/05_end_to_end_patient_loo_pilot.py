@@ -139,6 +139,18 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--save_epoch_checkpoints", type=int, nargs="*", default=[],
                     help="epochs (1-based, after completion) at which baseline Stage-1 weights, Adam "
                          "state and RNG states are saved")
+    ap.add_argument("--attack_seeds", type=int, nargs="*", default=None,
+                    help=("explicit attack-seed panel shared by EVERY Stage-1 seed (strict crossed "
+                          "design, e.g. 5101 5102 5103).  Overrides --attack_seed_reps.  Default: "
+                          "nested replicates derived from the Stage-1 seed (pilot behaviour)."))
+    ap.add_argument("--patient_panel_json", default=None,
+                    help=("eligibility_preflight.json written by 08; the patient panel for "
+                          "--panel_shadow is loaded from it and hard-validated against this split "
+                          "instead of calling choose_patients()"))
+    ap.add_argument("--panel_shadow", type=int, default=None,
+                    help="which proposed_affected_shadows entry to use (default: --affected_shadow)")
+    ap.add_argument("--require_complete_panel", action="store_true",
+                    help="fail if the preflight recorded any shortfall for the chosen shadow")
     ap.add_argument("--deletion_mode", choices=["filter_rechunk", "fixed_mask"], default="filter_rechunk",
                     help=("filter_rechunk (pilot): drop the rows and re-chunk the epoch order into "
                           "batches -> later batch boundaries and the dropout RNG stream shift.  "
@@ -310,8 +322,19 @@ def train_classifier_from_orders(
                         "optimizer_state": optimizer.state_dict(),
                         "rng_states": rng_states})
 
-    effective_train = np.asarray(
-        [v for v in train_orders[0] if int(v) not in excluded_all], dtype=np.int64)
+    # RNG fingerprint right after the last optimizer step: identical to the paired
+    # baseline's fingerprint <=> the dropout / trajectory RNG stream stayed aligned.
+    rng_fp = hashlib.sha256(torch.get_rng_state().numpy().tobytes())
+    if torch.cuda.is_available():
+        for st in torch.cuda.get_rng_state_all():
+            rng_fp.update(st.numpy().tobytes())
+    post_train_rng_sha256 = rng_fp.hexdigest()[:16]
+    all_train = np.asarray(train_orders[0], dtype=np.int64)
+    without_patient = np.asarray([v for v in all_train if int(v) not in excluded_all], dtype=np.int64)
+    fully_removed = bool(excluded_all) and removal_window is None and deletion_weight == 1.0
+    # for partial exposure the patient WAS trained on in some epochs (or at reduced weight),
+    # so the honest "training set" is the full order; report both views explicitly.
+    effective_train = without_patient if fully_removed else all_train
     exposure = {
         "n_excluded_images": int(len(excluded_all)),
         "n_epochs_total": int(len(train_orders)),
@@ -324,9 +347,14 @@ def train_classifier_from_orders(
     }
     metrics = {
         "train_accuracy": classification_accuracy(model, X, y, effective_train),
+        "train_accuracy_excluding_patient": classification_accuracy(model, X, y, without_patient),
+        "patient_images_accuracy": (classification_accuracy(model, X, y, sorted(excluded_all))
+                                    if excluded_all else None),
         "heldout_accuracy": classification_accuracy(model, X, y, eval_indices),
         "n_train_images": int(len(effective_train)),
+        "n_train_images_excluding_patient": int(len(without_patient)),
         "n_heldout_images": int(len(eval_indices)),
+        "post_train_rng_sha256": post_train_rng_sha256,
         "exposure": exposure,
     }
     model.eval()
@@ -399,6 +427,72 @@ def choose_patients(
         selected.extend(pool[:quota])
     rng.shuffle(selected)
     return selected
+
+
+def load_patient_panel(panel_path: Path, args: argparse.Namespace, split_hash: str,
+                       splits, y: np.ndarray, groups: np.ndarray):
+    """Load the frozen patient panel written by 08 and hard-validate it.
+
+    Checks: split sha256, affected shadow present in the proposal, every patient's raw
+    indices are exactly its images in the affected shadow's train split, class and
+    image-count eligibility under the CURRENT bounds, patients unique across all
+    shadows of the panel, and (optionally) no shortfall.
+    """
+    panel = json.loads(panel_path.read_text(encoding="utf-8"))
+    problems: List[str] = []
+    if panel.get("split_sha256") != split_hash:
+        problems.append(f"split sha256 mismatch: panel {panel.get('split_sha256')} vs run {split_hash}")
+    shadow = args.affected_shadow if args.panel_shadow is None else int(args.panel_shadow)
+    if shadow != args.affected_shadow:
+        problems.append(f"--panel_shadow {shadow} != --affected_shadow {args.affected_shadow}")
+    panels = panel.get("proposed_patient_panels_disjoint_across_shadows", {})
+    if str(shadow) not in panels:
+        problems.append(f"shadow {shadow} not in proposed_affected_shadows {list(panels)}")
+    shortfall = {k: v for k, v in panel.get("shortfall", {}).items() if k.startswith(f"shadow_{shadow}_")}
+    if shortfall and args.require_complete_panel:
+        problems.append(f"preflight shortfall for shadow {shadow}: {shortfall}")
+    if problems:
+        raise RuntimeError("patient panel rejected: " + "; ".join(problems))
+
+    idx = np.asarray(splits["shadow_models"][shadow]["train_idx"], dtype=np.int64)
+    all_ids_other = set()
+    for sid, per_class in panels.items():
+        if int(sid) != shadow:
+            for rows in per_class.values():
+                all_ids_other.update(int(r["patient_id"]) for r in rows)
+    candidates: List[Dict[str, object]] = []
+    for cname, rows in panels[str(shadow)].items():
+        cls = next(c for c, n in CLASS_NAMES.items() if n == cname)
+        if cls not in args.classes:
+            problems.append(f"panel class {cname} not in --classes {args.classes}")
+            continue
+        for r in rows:
+            pid = int(r["patient_id"])
+            pidx = idx[groups[idx] == pid]
+            if len(pidx) == 0:
+                problems.append(f"patient {pid} not in shadow {shadow} train split"); continue
+            if "raw_indices" in r and sorted(map(int, r["raw_indices"])) != sorted(pidx.tolist()):
+                problems.append(f"patient {pid}: raw indices differ from split")
+            vals, counts = np.unique(y[pidx], return_counts=True)
+            if int(vals[counts.argmax()]) != cls:
+                problems.append(f"patient {pid}: majority class != {cname}")
+            if not args.min_patient_images <= len(pidx) <= args.max_patient_images:
+                problems.append(f"patient {pid}: {len(pidx)} images outside "
+                                f"[{args.min_patient_images},{args.max_patient_images}]")
+            if pid in all_ids_other:
+                problems.append(f"patient {pid} also appears in another shadow's panel")
+            candidates.append({"patient_id": pid, "oct_class": cls, "class_name": cname,
+                               "n_images": int(len(pidx)), "raw_indices": pidx.tolist()})
+    ids = [c["patient_id"] for c in candidates]
+    if len(set(ids)) != len(ids):
+        problems.append("duplicate patient ids inside the panel")
+    if problems:
+        raise RuntimeError("patient panel rejected: " + "; ".join(problems))
+    per_class_n = {c: sum(r["oct_class"] == c for r in candidates) for c in args.classes}
+    report = {"n_patients": len(candidates), "per_class": per_class_n, "shadow": shadow,
+              "shortfall_recorded_by_preflight": shortfall, "split_sha256": split_hash}
+    LOGGER.info("Frozen patient panel accepted: %s", report)
+    return candidates, report
 
 
 def make_interface(
@@ -572,6 +666,26 @@ def binary_metrics(y_true: np.ndarray, prob: np.ndarray) -> Dict[str, float]:
     }
 
 
+def attack_rep_seeds(stage1_seed: int, cls: int, args: argparse.Namespace) -> List[int]:
+    """Attack seeds used for (stage1_seed, cls).
+
+    crossed: --attack_seeds panel, identical for every Stage-1 seed (rep 0 is the panel's
+             first entry; the pilot's derived seed is NOT used).
+    nested : seed*100+cls, then +10007*rep (pilot behaviour; independent replicates whose
+             values differ across Stage-1 seeds).
+    """
+    panel = getattr(args, "attack_seeds", None)
+    if panel:
+        return [int(v) for v in panel]
+    base = int(stage1_seed * 100 + cls)
+    reps = max(1, int(getattr(args, "attack_seed_reps", 1)))
+    return [base if r == 0 else base + 10007 * r for r in range(reps)]
+
+
+def attack_seed_design(args: argparse.Namespace) -> str:
+    return "crossed_fixed_panel" if getattr(args, "attack_seeds", None) else "nested_derived_from_stage1_seed"
+
+
 def evaluate_attack_condition(
     train_x: np.ndarray,
     train_membership: np.ndarray,
@@ -592,11 +706,10 @@ def evaluate_attack_condition(
             raise RuntimeError(f"Class {cls} has too few attack rows: train={tr.sum()}, test={te.sum()}")
         if len(np.unique(train_membership[tr])) != 2 or len(np.unique(target["membership"][te])) != 2:
             raise RuntimeError(f"Class {cls} does not contain both membership labels")
-        attack_seed = int(seed * 100 + cls)
-        reps = max(1, int(getattr(args, "attack_seed_reps", 1)))
+        rep_seed_list = attack_rep_seeds(seed, cls, args)
+        reps = len(rep_seed_list)
         rep_metrics = []
-        for rep in range(reps):
-            rep_seed = attack_seed if rep == 0 else attack_seed + 10007 * rep
+        for rep, rep_seed in enumerate(rep_seed_list):
             model = train_attack_model_deterministic(
                 train_x[tr], train_membership[tr], rep_seed,
                 args.attack_epochs, args.attack_lr, args.attack_batch_size,
@@ -616,6 +729,8 @@ def evaluate_attack_condition(
             "n_train_nonmember": int((train_membership[tr] == 0).sum()),
             **averaged,
             "attack_seed_reps": reps,
+            "attack_seeds": rep_seed_list,
+            "attack_seed_design": attack_seed_design(args),
             "per_rep_cross_entropy": [m["cross_entropy"] for m in rep_metrics],
             "per_rep_auc": [m["auc"] for m in rep_metrics],
         }
@@ -884,6 +999,8 @@ def write_flat_summary(out_dir: Path, results: Sequence[Mapping[str, object]]) -
             "delta_full_macro_cross_entropy": nz(macro_full["cross_entropy"]),
             "delta_full_macro_auc": nz(macro_full["auc"]),
             "membership_conditions_evaluated": result.get("membership_conditions_evaluated", "J00,J10,J01,J11"),
+            "primary_endpoint": ("full_J11_minus_J00" if full["cross_entropy"] is not None
+                                 else "value_J10_minus_J00"),
         })
     path = out_dir / "patient_seed_summary.csv"
     with path.open("w", newline="", encoding="utf-8") as f:
@@ -1077,6 +1194,7 @@ def main() -> None:
         parse_removal_window(args.removal_epochs, args.shadow_epochs) != (0, args.shadow_epochs)
     partial_exposure = partial_window or args.deletion_weight < 1.0
     relabel_conditions = not partial_exposure or args.window_membership == "relabel"
+    primary_is_full = relabel_conditions
     if partial_exposure and not relabel_conditions:
         LOGGER.warning("Partial exposure run (%s, weight=%.2f): J01/J11 are skipped; "
                        "primary endpoint is J10-J00 (value pathway).",
@@ -1092,8 +1210,11 @@ def main() -> None:
             "J10": "LOO vectors + baseline membership (value pathway)",
             "J01": "baseline vectors + LOO membership (relabel pathway)",
             "J11": "LOO vectors + LOO membership (full patient LOO)",
-            "primary": "patient-matched OCT-class cross-entropy: J11 - J00",
+            "primary": ("patient-matched OCT-class cross-entropy: J11 - J00"
+                        if primary_is_full else
+                        "patient-matched OCT-class cross-entropy: J10 - J00 (partial exposure: value only)"),
             "mechanistic": "patient-matched OCT-class cross-entropy: J10 - J00",
+            "attack_seed_design": attack_seed_design(args),
             "secondary": "matched-class balanced accuracy, accuracy, AUC; macro metrics",
         },
         "gate_policy": (
@@ -1113,7 +1234,9 @@ def main() -> None:
         new_defaults = {"removal_epochs": None, "attack_seed_reps": 1,
                         "trajectory_replays": 0, "save_epoch_checkpoints": [],
                         "deletion_mode": "filter_rechunk", "deletion_weight": 1.0,
-                        "window_membership": "value_only"}
+                        "window_membership": "value_only", "attack_seeds": None,
+                        "patient_panel_json": None, "panel_shadow": None,
+                        "require_complete_panel": False}
         for key, default in new_defaults.items():
             if key not in before and now.get(key) == default:
                 now.pop(key, None)
@@ -1137,6 +1260,16 @@ def main() -> None:
     candidates_path = out_dir / "selected_patients.json"
     if candidates_path.exists() and not args.overwrite:
         candidates = json.loads(candidates_path.read_text(encoding="utf-8"))["patients"]
+    elif args.patient_panel_json:
+        candidates, panel_report = load_patient_panel(
+            Path(args.patient_panel_json), args, split_hash, splits, y, groups)
+        json_dump(candidates_path, {
+            "selection_rule": "frozen panel from eligibility preflight (08); validated against this split",
+            "panel_source": str(Path(args.patient_panel_json).resolve()),
+            "panel_validation": panel_report,
+            "split_sha256": split_hash,
+            "patients": candidates,
+        })
     else:
         candidates = choose_patients(
             affected_split["train_idx"], y, groups, args.classes, args.n_patients,
@@ -1497,9 +1630,14 @@ def main() -> None:
         "membership_conditions_evaluated": "J00,J10,J01,J11" if relabel_conditions else "J00,J10",
         "attack_seed_reps": args.attack_seed_reps,
         "elapsed_seconds": time.time() - started,
+        "primary_endpoint_column": ("primary_delta_full_matched_cross_entropy" if primary_is_full
+                                    else "delta_value_matched_cross_entropy"),
+        "attack_seed_design": attack_seed_design(args),
         "primary_estimand": (
-            "patient-matched OCT-class cross-entropy J11 - J00 "
-            "(full patient LOO)"),
+            "patient-matched OCT-class cross-entropy J11 - J00 (full patient LOO)"
+            if primary_is_full else
+            "patient-matched OCT-class cross-entropy J10 - J00 (partial exposure: value pathway only; "
+            "J01/J11 undefined because the patient has no binary membership label)"),
         "mechanistic_estimand": (
             "patient-matched OCT-class cross-entropy J10 - J00 "
             "(continuous value pathway)"),

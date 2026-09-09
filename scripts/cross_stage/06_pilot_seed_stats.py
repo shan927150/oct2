@@ -87,6 +87,17 @@ def describe(values: np.ndarray) -> Dict[str, object]:
     return out
 
 
+def _no_nan(obj):
+    """Recursively replace float NaN/inf by None so the JSON is standard."""
+    if isinstance(obj, dict):
+        return {k: _no_nan(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_no_nan(v) for v in obj]
+    if isinstance(obj, float) and not np.isfinite(obj):
+        return None
+    return obj
+
+
 def load_rows(pilot_dir: Path) -> List[dict]:
     path = pilot_dir / "patient_seed_summary.csv"
     if not path.exists():
@@ -166,19 +177,22 @@ def main() -> None:
     for cname, recs in classes.items():
         class_summary[cname] = {}
         for name in recs[0]["endpoints"]:
-            means = np.asarray([r["endpoints"][name]["mean"] for r in recs], dtype=float)
+            means = np.asarray([np.nan if r["endpoints"][name]["mean"] is None else r["endpoints"][name]["mean"]
+                                for r in recs], dtype=float)
+            finite = means[np.isfinite(means)]
             sds = [r["endpoints"][name]["sd"] for r in recs if r["endpoints"][name]["sd"] is not None]
             vars_ = [r["endpoints"][name]["var"] for r in recs if r["endpoints"][name]["var"] is not None]
             class_summary[cname][name] = {
                 "n_patients": int(len(recs)),
-                "mean_of_patient_means": float(np.nanmean(means)),
-                "sd_between_patients": float(np.nanstd(means, ddof=1)) if len(recs) > 1 else None,
+                "n_patients_with_values": int(len(finite)),
+                "mean_of_patient_means": float(finite.mean()) if len(finite) else None,
+                "sd_between_patients": float(finite.std(ddof=1)) if len(finite) > 1 else None,
                 "mean_within_patient_seed_sd": float(np.mean(sds)) if sds else None,
                 "rms_within_patient_seed_sd": float(np.sqrt(np.mean(vars_))) if vars_ else None,
                 "seed_variance_note": ("seeds change Stage 1 AND attack seed together in the pilot: "
                                        "combined algorithmic variance, not Stage-1-only"),
-                "patients_positive": int((means > 0).sum()),
-                "patients_negative": int((means < 0).sum()),
+                "patients_positive": int((finite > 0).sum()),
+                "patients_negative": int((finite < 0).sum()),
             }
 
     # flat CSV
@@ -201,7 +215,7 @@ def main() -> None:
                     row[f"{name}__{k}"] = rec["endpoints"][name][k]
             w.writerow(row)
     out_json = pilot_dir / f"{args.out_prefix}.json"
-    out_json.write_text(json.dumps({
+    out_json.write_text(json.dumps(_no_nan({
         "source": str(pilot_dir / "patient_seed_summary.csv"),
         "notes": {
             "relabel_given_P1_ce": "J11 - J10: relabel effect evaluated at LOO vectors",
@@ -212,7 +226,7 @@ def main() -> None:
         },
         "patients": patients,
         "class_summary": class_summary,
-    }, indent=2), encoding="utf-8")
+    }), indent=2, allow_nan=False), encoding="utf-8")
 
     # console table
     print(f"{'pid':>6} {'class':>7} {'img':>4} | {'full_ce mean':>12} {'sd':>9} {'min':>9} {'max':>9} "
@@ -232,7 +246,7 @@ def main() -> None:
     for cname, s in class_summary.items():
         for name in ("full_ce", "value_ce", "relabel_ce", "interaction_ce",
                      "relabel_given_P1_ce", "value_given_M1_ce"):
-            if name in s:
+            if name in s and s[name]['mean_of_patient_means'] is not None:
                 bp = s[name]['sd_between_patients']; wp = s[name]['rms_within_patient_seed_sd']
                 print(f"  {cname:>7} {name:>22}: {s[name]['mean_of_patient_means']:+.6f} "
                       f"(between-patient SD {'n/a' if bp is None else f'{bp:.6f}'}, "

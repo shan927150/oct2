@@ -154,7 +154,13 @@ def attack_implicit_v(model, P_train: np.ndarray, M_train: np.ndarray,
         H[k] = flatten([r if r is not None else torch.zeros_like(p) for r, p in zip(row, params)])
     H = 0.5 * (H + H.T)
     eig = torch.linalg.eigvalsh(H)
-    u = torch.linalg.solve(H + damping * torch.eye(d, device=device, dtype=dt), q)
+    A = H + damping * torch.eye(d, device=device, dtype=dt)
+    u = torch.linalg.solve(A, q)
+    damped_min = float(eig.min()) + damping
+    damped_max = float(eig.max()) + damping
+    solve_residual = float((A @ u - q).norm() / (q.norm() + 1e-30))
+    attack_reliable = bool(damped_min > 0 and solve_residual < 1e-6 and
+                           (damped_max / max(damped_min, 1e-30)) < 1e8)
 
     # v_j = - d/dp_j [u . grad_phi L]   (u is a constant here: Eq. 20 differentiates
     # B_sj only; H and q were built without create_graph so u carries no graph, and
@@ -170,6 +176,10 @@ def attack_implicit_v(model, P_train: np.ndarray, M_train: np.ndarray,
         "train_grad_norm": grad_norm,
         "hessian_eig_min": float(eig.min()),
         "hessian_eig_max": float(eig.max()),
+        "damped_eig_min": damped_min,
+        "damped_condition_number": damped_max / max(damped_min, 1e-30) if damped_min > 0 else None,
+        "solve_rel_residual": solve_residual,
+        "attack_solve_reliable": attack_reliable,
         "damping": damping,
     }
 
@@ -420,6 +430,16 @@ def main() -> None:
     pargs.overwrite = False
     seeds = args.seeds or list(pargs.seeds)
     a = int(pargs.affected_shadow)
+    alpha = float(getattr(pargs, "deletion_weight", 1.0))
+    removal_epochs = getattr(pargs, "removal_epochs", None)
+    partial_window = removal_epochs is not None and \
+        pilot.parse_removal_window(removal_epochs, pargs.shadow_epochs) != (0, pargs.shadow_epochs)
+    if partial_window:
+        LOGGER.warning("Partial removal window %s: the static Eq. 79 score has no temporal estimand; "
+                       "L3 / frozen columns are set to None (needs the Adam trajectory score, Eq. 42+74). "
+                       "L1/L2 (true P1 / true dtheta) remain valid.", removal_epochs)
+    if alpha < 1.0:
+        LOGGER.info("Dose run alpha=%.3f: L3 score, dtheta_hat and frozen_h are scaled by alpha", alpha)
     summary = json.loads((pilot_dir / "experiment_summary.json").read_text(encoding="utf-8"))
     loo_classes = [int(c) for c in summary.get("qualified_classes", pargs.classes)]
     if args.classes:
@@ -474,9 +494,9 @@ def main() -> None:
         for cls in loo_classes:
             tr = interface0["classes"] == cls
             te = target_queries["classes"] == cls
-            attack_seed = int(seed * 100 + cls)
-            n_reps = max(1, int(getattr(pargs, "attack_seed_reps", 1)))
-            rep_seeds = [attack_seed if r == 0 else attack_seed + 10007 * r for r in range(n_reps)]
+            rep_seeds = pilot.attack_rep_seeds(seed, cls, pargs)   # same panel/derivation as 05
+            attack_seed = rep_seeds[0]
+            n_reps = len(rep_seeds)
 
             def train_attack(x_tr, m_tr, rep_seed):
                 return pilot.train_attack_model_deterministic(
@@ -516,7 +536,9 @@ def main() -> None:
             h = shadow_h(base_model, X[raw_aff], v_aff, device)
             cg = conjugate_gradient(hvp, h, args.cg_iters, args.cg_tol)
             w = cg["x"]
-            cg_ok = (not cg["nonpositive_curvature"]) and cg["final_rel_residual"] is not None \
+            lanczos_spd = bool(lanczos["lambda_min_est"] > 0)
+            attack_ok = all(r["attack_solve_reliable"] for r in imp_reps)
+            cg_ok = lanczos_spd and (not cg["nonpositive_curvature"]) and cg["final_rel_residual"] is not None \
                 and cg["final_rel_residual"] <= args.cg_fail_tol
             w_grid = {}
             for g, hvp_g in hvp_grid.items():
@@ -528,7 +550,9 @@ def main() -> None:
                 "attack_per_seed": imp_reps,
                 "h_norm": float(h.norm()),
                 "cg": {k: val for k, val in cg.items() if k != "x"},
-                "cg_reliable": bool(cg_ok),
+                "cg_score_reliable": bool(cg_ok),
+                "attack_solve_reliable": bool(attack_ok),
+                "lanczos_spd": lanczos_spd,
                 "cg_grid": {str(g): {k: val for k, val in c.items() if k != "x"} for g, (_, c) in w_grid.items()},
                 "n_affected_rows": int(len(raw_aff)),
                 "v_between_attack_seed_sd": float(np.std(np.stack(v_reps), axis=0).mean()) if n_reps > 1 else 0.0,
@@ -580,14 +604,18 @@ def main() -> None:
                 gsum = G.sum(dim=0)
                 cg_p = conjugate_gradient(hvp, gsum / n_s, args.cg_iters, args.cg_tol)
                 dtheta_hat = cg_p["x"]                                           # Eq. 56 with eps=-1/n
-                cg_p_ok = (not cg_p["nonpositive_curvature"]) and cg_p["final_rel_residual"] is not None \
+                cg_p_ok = lanczos_spd and (not cg_p["nonpositive_curvature"]) and cg_p["final_rel_residual"] is not None \
                     and cg_p["final_rel_residual"] <= args.cg_fail_tol
+                # dose-response: the linear score of removing a fraction alpha is alpha * full score
+                dtheta_hat = alpha * dtheta_hat
+                score_remove_per_image = alpha * score_remove_per_image
+                frozen_h = alpha * frozen_h
 
                 # --- ladder predictions of Delta_value
                 L1_reps = [float((v_k * (p1 - p0)).sum()) for v_k in v_reps]
                 L1_lin = float(np.mean(L1_reps))
                 L2_lin = float(h @ dtheta_true)
-                L3_lin = float(score_remove_per_image.sum())
+                L3_lin = None if partial_window else float(score_remove_per_image.sum())
                 lin_true = linearized_predictions(base_model, X[raw_aff], dtheta_true, device)
                 lin_if = linearized_predictions(base_model, X[raw_aff], dtheta_hat, device)
                 p1_hat_true, p1_hat_if = lin_true["projected"], lin_if["projected"]
@@ -600,9 +628,9 @@ def main() -> None:
                 M0 = interface0["membership"][tr]
                 M1 = pilot.membership_after_removal(interface0, removed, a)[tr]
                 L2_retrain = retrain_ce(p1_hat_true, M0) - J00
-                L3_retrain = retrain_ce(p1_hat_if, M0) - J00
+                L3_retrain = None if partial_window else retrain_ce(p1_hat_if, M0) - J00
                 relabel_ok = cond["J11"] is not None
-                L3_hybrid = retrain_ce(p1_hat_if, M1) - J00 if relabel_ok else None
+                L3_hybrid = (retrain_ce(p1_hat_if, M1) - J00) if (relabel_ok and not partial_window) else None
                 L2_hybrid = retrain_ce(p1_hat_true, M1) - J00 if relabel_ok else None
                 row = {
                     "seed": seed, "patient_id": pid, "oct_class": cls, "class_name": pat["class_name"],
@@ -620,11 +648,16 @@ def main() -> None:
                     "L2_hybrid_full": L2_hybrid,
                     "L3_lin_value": L3_lin,
                     "score_remove_patient": L3_lin,
-                    "score_upweight_patient_sum": float(score_upweight_per_image.sum()),
-                    "score_remove_per_image_mean": float(score_remove_per_image.mean()),
+                    "score_upweight_patient_sum": None if partial_window else float(score_upweight_per_image.sum()),
+                    "score_remove_per_image_mean": None if partial_window else float(score_remove_per_image.mean()),
                     "L3_retrain_value": L3_retrain,
                     "L3_hybrid_full": L3_hybrid,
-                    "frozen_h": float(frozen_h.sum()),
+                    "frozen_h": None if partial_window else float(frozen_h.sum()),
+                    "deletion_weight_alpha": alpha,
+                    "removal_epochs": removal_epochs,
+                    "l3_estimand": ("not_applicable: partial window needs Eq.42+74 trajectory score"
+                                    if partial_window else
+                                    f"alpha*(1/n_s) sum_i w^T g_i, alpha={alpha:g}"),
                     "dtheta_true_norm": float(dtheta_true.norm()),
                     "dtheta_hat_norm": float(dtheta_hat.norm()),
                     "dtheta_cosine": float((dtheta_true @ dtheta_hat) /
@@ -637,15 +670,19 @@ def main() -> None:
                     "p1hat_true_mean_projection_l1": lin_true["mean_projection_l1"],
                     "p1hat_if_row_clip_rate": lin_if["row_clip_rate"],
                     "p1hat_if_mean_projection_l1": lin_if["mean_projection_l1"],
-                    "cg_reliable": bool(cg_ok and cg_p_ok),
+                    "cg_score_reliable": bool(cg_ok),
+                    "cg_dtheta_reliable": bool(cg_p_ok),
+                    "attack_solve_reliable": bool(attack_ok),
+                    "lanczos_spd": lanczos_spd,
                     "cg_patient_iters": cg_p["iters"],
                     "cg_patient_rel_residual": cg_p["final_rel_residual"],
                     "cg_patient_min_rayleigh": cg_p["min_rayleigh_quotient"],
                 }
                 for g, (w_g, _) in w_grid.items():
-                    row[f"L3_lin_value_gamma{g:g}"] = float((G @ w_g / n_s).sum())
+                    row[f"L3_lin_value_gamma{g:g}"] = None if partial_window else float(alpha * (G @ w_g / n_s).sum())
                 if not args.skip_frozen_self:
-                    row["frozen_self"] = float(frozen_self_scores(base_model, attack, X, y, removed, device).sum())
+                    row["frozen_self"] = None if partial_window else float(alpha * np.mean([
+                        frozen_self_scores(base_model, att_k, X, y, removed, device).sum() for att_k in attacks]))
 
                 if args.attack_seed_reps > 0:
                     dv, df = [], []
@@ -670,9 +707,11 @@ def main() -> None:
                 LOGGER.info("seed=%d pid=%d actual value=%+.5f full=%s | L1=%+.5f L2=%+.5f/%+.5f L3=%+.5f/%+.5f hybrid=%s cos=%.3f reliable=%s",
                             seed, pid, row["actual_value"],
                             "n/a" if row["actual_full"] is None else f"{row['actual_full']:+.5f}",
-                            L1_lin, L2_lin, L2_retrain, L3_lin, L3_retrain,
+                            L1_lin, L2_lin, L2_retrain,
+                            float("nan") if L3_lin is None else L3_lin,
+                            float("nan") if L3_retrain is None else L3_retrain,
                             "n/a" if L3_hybrid is None else f"{L3_hybrid:+.5f}",
-                            row["dtheta_cosine"], row["cg_reliable"])
+                            row["dtheta_cosine"], (row["cg_score_reliable"], row["cg_dtheta_reliable"]))
                 write_rows(out_dir / "ladder_rows.csv", rows)
 
     write_rows(out_dir / "ladder_rows.csv", rows)
@@ -709,7 +748,8 @@ def analyze(rows: List[dict]) -> Dict[str, object]:
                  ("L3_lin_value", "actual_full"), ("frozen_h", "actual_full"),
                  ("frozen_self", "actual_full")],
     }
-    needs_cg = {"L3_lin_value", "L3_retrain_value", "L3_hybrid_full"}
+    needs_score_cg = {"L3_lin_value"}
+    needs_dtheta_cg = {"L3_retrain_value", "L3_hybrid_full"}
 
     def corr(xs, ys):
         pairs_ = [(x, y_) for x, y_ in zip(xs, ys) if x is not None and y_ is not None
@@ -733,8 +773,9 @@ def analyze(rows: List[dict]) -> Dict[str, object]:
         return float(np.mean(vals)) if vals else None
 
     out = {"per_patient_seed": {}, "per_patient_mean": {}, "note": (
-        "descriptive only; pilot n is tiny. Rows with cg_reliable=False are dropped "
-        "from L3 pairs. Use patient-level bootstrap for CIs in the formal run.")}
+        "descriptive only; pilot n is tiny. L3_lin needs cg_score_reliable (Lanczos SPD + no "
+        "negative curvature + residual); L3_retrain/hybrid need cg_dtheta_reliable; all pairs need "
+        "attack_solve_reliable. Use patient-level bootstrap for CIs in the formal run.")}
     by_pid: Dict[int, List[dict]] = {}
     for r in rows:
         by_pid.setdefault(int(r["patient_id"]), []).append(r)
@@ -742,7 +783,10 @@ def analyze(rows: List[dict]) -> Dict[str, object]:
         for pk, ak in plist:
             if pk not in rows[0]:
                 continue
-            use = [r for r in rows if r.get("cg_reliable", True) or pk not in needs_cg]
+            use = [r for r in rows
+                   if (pk not in needs_score_cg or r.get("cg_score_reliable", True))
+                   and (pk not in needs_dtheta_cg or r.get("cg_dtheta_reliable", True))
+                   and r.get("attack_solve_reliable", True)]
             out["per_patient_seed"][f"{pk}~{ak}"] = corr([r[pk] for r in use], [r[ak] for r in use])
             by_pid_use: Dict[int, List[dict]] = {}
             for r in use:
@@ -753,13 +797,15 @@ def analyze(rows: List[dict]) -> Dict[str, object]:
     # damping-grid rank stability of the Stage-1 implicit score
     grid_keys = sorted(k for k in rows[0] if k.startswith("L3_lin_value_gamma"))
     if grid_keys:
-        base = [r["L3_lin_value"] for r in rows]
-        out["damping_sensitivity"] = {
-            k: {"spearman_vs_primary": float(spearmanr(base, [r[k] for r in rows])[0]),
-                "mean_abs_ratio_vs_primary": float(np.mean([abs(r[k]) for r in rows]) /
-                                                   (np.mean([abs(b) for b in base]) + 1e-30))}
-            for k in grid_keys
-        }
+        rows_g = [r for r in rows if r["L3_lin_value"] is not None]
+        if len(rows_g) >= 3:
+            base = [r["L3_lin_value"] for r in rows_g]
+            out["damping_sensitivity"] = {
+                k: {"spearman_vs_primary": float(spearmanr(base, [r[k] for r in rows_g])[0]),
+                    "mean_abs_ratio_vs_primary": float(np.mean([abs(r[k]) for r in rows_g]) /
+                                                       (np.mean([abs(b) for b in base]) + 1e-30))}
+                for k in grid_keys
+            }
     if "attackseed_value_sd" in rows[0]:
         out["stage2_only_noise"] = {
             "mean_sd_value": mean_or_none([r["attackseed_value_sd"] for r in rows]),
@@ -769,7 +815,10 @@ def analyze(rows: List[dict]) -> Dict[str, object]:
         }
     out["dtheta_cosine_mean"] = float(np.mean([r["dtheta_cosine"] for r in rows]))
     out["n_rows"] = len(rows)
-    out["n_rows_cg_reliable"] = int(sum(bool(r.get("cg_reliable", True)) for r in rows))
+    out["n_rows_cg_score_reliable"] = int(sum(bool(r.get("cg_score_reliable", True)) for r in rows))
+    out["n_rows_cg_dtheta_reliable"] = int(sum(bool(r.get("cg_dtheta_reliable", True)) for r in rows))
+    out["n_rows_attack_solve_reliable"] = int(sum(bool(r.get("attack_solve_reliable", True)) for r in rows))
+    out["l3_estimand"] = rows[0].get("l3_estimand")
     return out
 
 
