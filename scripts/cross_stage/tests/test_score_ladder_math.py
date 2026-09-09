@@ -122,7 +122,90 @@ def test_stage1():
     assert rel < 0.15, rel  # first-order in 1/n; n=80 -> O(1%) plus refit tolerance
 
 
+
+
+def test_detach_equivalence_nonstationary():
+    """Blocker-A check: v must not change whether u is detached or not, even far from
+    a stationary point (H and q are built without create_graph, so u is graph-free)."""
+    torch.manual_seed(1)
+    att = nn.Sequential(nn.Linear(4, 8), nn.ReLU(), nn.Linear(8, 2))  # untrained: |grad L| large
+    P = torch.softmax(torch.randn(50, 4), 1).numpy(); M = (np.random.rand(50) < 0.5).astype(int)
+    Pq = torch.softmax(torch.randn(30, 4), 1).numpy(); Mq = (np.random.rand(30) < 0.5).astype(int)
+    res = ladder.attack_implicit_v(att, P, M, Pq, Mq, 1e-3, DEV)
+    # manual version that differentiates a *non-detached* u through an explicit graph
+    from torch.func import functional_call
+    names = [n for n, _ in att.named_parameters()]
+    params = [p.detach().clone().requires_grad_(True) for _, p in att.named_parameters()]
+    pd = dict(zip(names, params)); Pt = torch.tensor(P).requires_grad_(True)
+    L = F.cross_entropy(functional_call(att, pd, (Pt,)), torch.tensor(M))
+    gL = ladder.flatten(torch.autograd.grad(L, params, create_graph=True))
+    q = ladder.flatten(torch.autograd.grad(
+        F.cross_entropy(functional_call(att, pd, (torch.tensor(Pq),)), torch.tensor(Mq)), params))
+    d = gL.numel()
+    rows = []
+    for k in range(d):
+        g = torch.autograd.grad(gL[k], params, retain_graph=True, create_graph=True, allow_unused=True)
+        rows.append(ladder.flatten([gi if gi is not None else torch.zeros_like(p) for gi, p in zip(g, params)]))
+    H = torch.stack(rows); H = 0.5 * (H + H.T)                      # graph-carrying Hessian
+    u_graph = torch.linalg.solve(H + 1e-3 * torch.eye(d), q)         # NOT detached
+    u_const = u_graph.detach()
+    v_right = -torch.autograd.grad((gL * u_const).sum(), Pt, retain_graph=True)[0].numpy()
+    v_wrong = -torch.autograd.grad((gL * u_graph).sum(), Pt)[0].numpy()
+    err_impl = np.abs(res["v"] - v_right).max() / (np.abs(v_right).max() + 1e-12)
+    extra = np.abs(v_wrong - v_right).max() / (np.abs(v_right).max() + 1e-12)
+    print(f"[C] |grad L|={res['train_grad_norm']:.2e}; implementation vs detached reference rel err = {err_impl:.1e}; "
+          f"size of the spurious (dU/dP)^T gL term if u were NOT detached = {extra:.2e}")
+    assert err_impl < 1e-10, err_impl
+
+
+def test_cg_curvature_gate():
+    """CG must flag an indefinite operator instead of returning garbage silently."""
+    A = torch.diag(torch.tensor([2.0, 1.0, -0.5]))
+    res = ladder.conjugate_gradient(lambda v: A @ v, torch.tensor([1.0, 1.0, 1.0]), 20, 1e-8)
+    assert res["nonpositive_curvature"] is True or res["min_rayleigh_quotient"] <= 0
+    B = torch.diag(torch.tensor([2.0, 1.0, 0.5]))
+    res2 = ladder.conjugate_gradient(lambda v: B @ v, torch.tensor([1.0, 1.0, 1.0]), 20, 1e-10)
+    assert not res2["nonpositive_curvature"] and res2["final_rel_residual"] < 1e-8
+    lz = ladder.lanczos_extreme_eigs(lambda v: B @ v, 3, 3, DEV, torch.float64)
+    assert abs(lz["lambda_min_est"] - 0.5) < 1e-6 and abs(lz["lambda_max_est"] - 2.0) < 1e-6
+    print(f"[D] CG curvature gate OK; Lanczos eigs {lz['lambda_min_est']:.3f}/{lz['lambda_max_est']:.3f}")
+
+
+def test_fixed_mask_rng_alignment():
+    """fixed_mask deletion consumes exactly the baseline RNG stream (dropout aligned) and is
+    independent of the removed row's content; filter_rechunk does not have these properties."""
+    import importlib.util as iu
+    spec5 = iu.spec_from_file_location("pilot05", HERE.parent / "05_end_to_end_patient_loo_pilot.py")
+    pilot = iu.module_from_spec(spec5); sys.modules["pilot05"] = pilot; spec5.loader.exec_module(pilot)
+    torch.set_default_dtype(torch.float32)
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(40, 1, 16, 16)).astype(np.float32); y = rng.integers(0, 4, size=40)
+    orders = pilot.make_epoch_orders(np.arange(40), 2, 123)
+    kw = dict(eval_indices=np.arange(40), seed=7, n_hidden=8, lr=1e-3, batch_size=16,
+              weight_decay=0.0, deterministic=True)
+
+    def run(mode, excl, X_=X):
+        m, _ = pilot.train_classifier_from_orders(X_, y, orders, excluded_indices=excl, deletion_mode=mode, **kw)
+        return ladder.flatten([p.detach() for p in m.parameters()]).clone(), torch.get_rng_state().clone()
+
+    base, rng_base = run("fixed_mask", [])
+    base_f, _ = run("filter_rechunk", [])
+    assert torch.equal(base, base_f), "no-deletion path must be identical in both modes"
+    loo, rng_loo = run("fixed_mask", [3, 17])
+    assert torch.equal(rng_base, rng_loo), "fixed_mask must leave the RNG stream aligned with baseline"
+    X2 = X.copy(); X2[[3, 17]] = rng.normal(size=(2, 1, 16, 16)).astype(np.float32)
+    loo2, _ = run("fixed_mask", [3, 17], X2)
+    assert torch.equal(loo, loo2), "fixed_mask result must not depend on the removed rows' content"
+    assert not torch.equal(loo, base), "deletion must change the model"
+    _, rng_filter = run("filter_rechunk", [3, 17])
+    print(f"[E] fixed_mask: RNG aligned, content-independent; filter_rechunk RNG aligned with baseline: "
+          f"{torch.equal(rng_base, rng_filter)}")
+
+
 if __name__ == "__main__":
     test_attack_stage()
     test_stage1()
+    test_detach_equivalence_nonstationary()
+    test_cg_curvature_gate()
+    test_fixed_mask_rng_alignment()
     print("all checks passed")

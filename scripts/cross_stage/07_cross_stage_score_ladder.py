@@ -34,9 +34,20 @@ and evaluates an "oracle ladder" that tells you WHERE the chain breaks:
     frozen_h     sum_i h_s^T g_si                  one-checkpoint TracIn-style
     frozen_self  sum_i <grad CE(A(p_i),m_i), g_si> old pilot proxy (Eq. 80)
 
-Optional ``--attack_seed_reps K`` re-trains the Stage-2 attack under K extra
-attack seeds for the four (P, M) conditions using the TRUE P1, giving the
-Stage-2-only noise SD of Delta_value / Delta_full for every patient-seed run.
+If the 05 run used ``--attack_seed_reps K``, the SAME K attack seeds are
+replayed here: one attack model, one v and one J00 per attack seed (score and
+truth matched seed by seed; h and w are linear in v so the seed-mean score is
+computed with a single CG solve from the seed-mean v).  ``J00`` reproduction is
+a hard assertion.  CG is gated on curvature and residual, a Lanczos estimate of
+the extreme eigenvalues of the damped Stage-1 operator is reported, and
+``--damping_shadow_grid`` reports rank stability of the score across gamma_s.
+
+Optional ``--attack_seed_reps K`` re-trains the Stage-2 attack under K extra,
+independent attack seeds for the (P, M) conditions using the TRUE P1, giving
+the Stage-2-only noise SD of Delta_value / Delta_full for every patient-seed run.
+
+Partial-exposure 05 runs (``--removal_epochs`` / ``--deletion_weight``) have no
+J01/J11; the full-effect columns are then empty and only Delta_value is scored.
 
 Usage (Delta, GPU recommended, ~minutes):
     python scripts/cross_stage/07_cross_stage_score_ladder.py \
@@ -145,7 +156,10 @@ def attack_implicit_v(model, P_train: np.ndarray, M_train: np.ndarray,
     eig = torch.linalg.eigvalsh(H)
     u = torch.linalg.solve(H + damping * torch.eye(d, device=device, dtype=dt), q)
 
-    # v_j = - d/dp_j [u . grad_phi L]
+    # v_j = - d/dp_j [u . grad_phi L]   (u is a constant here: Eq. 20 differentiates
+    # B_sj only; H and q were built without create_graph so u carries no graph, and
+    # .detach() makes that explicit)
+    u = u.detach()
     s = (gL_flat * u).sum()
     V = torch.autograd.grad(s, P)[0]
     v = (-V).detach().cpu().numpy()
@@ -236,15 +250,25 @@ def make_hvp(model, X: np.ndarray, y: np.ndarray, idx: np.ndarray, device,
 
 
 def conjugate_gradient(hvp, b: torch.Tensor, iters: int, tol: float) -> Dict[str, object]:
+    """CG on the damped system.  Stops and flags if non-positive curvature is met
+    (the system is then not SPD and the solution is not trustworthy)."""
     x = torch.zeros_like(b)
     r = b.clone()
     p = r.clone()
     rs = r @ r
     b_norm = float(b.norm()) + 1e-30
     history = []
+    min_curvature = float("inf")
+    nonpositive = False
     for k in range(iters):
         Ap = hvp(p)
-        alpha = rs / (p @ Ap + 1e-30)
+        pAp = float(p @ Ap)
+        curv = pAp / (float(p @ p) + 1e-30)
+        min_curvature = min(min_curvature, curv)
+        if pAp <= 0:
+            nonpositive = True
+            break
+        alpha = rs / pAp
         x = x + alpha * p
         r = r - alpha * Ap
         rs_new = r @ r
@@ -254,17 +278,56 @@ def conjugate_gradient(hvp, b: torch.Tensor, iters: int, tol: float) -> Dict[str
             break
         p = r + (rs_new / rs) * p
         rs = rs_new
-    return {"x": x, "iters": len(history), "final_rel_residual": history[-1] if history else None}
+    return {"x": x, "iters": len(history), "final_rel_residual": history[-1] if history else None,
+            "min_rayleigh_quotient": min_curvature if np.isfinite(min_curvature) else None,
+            "nonpositive_curvature": nonpositive}
+
+
+def lanczos_extreme_eigs(hvp, dim: int, iters: int, device, dtype, seed: int = 0) -> Dict[str, float]:
+    """Lanczos estimate of the extreme eigenvalues of the (damped) operator."""
+    g = torch.Generator(device="cpu").manual_seed(seed)
+    v = torch.randn(dim, generator=g).to(device=device, dtype=dtype)
+    v = v / v.norm()
+    V = [v]
+    alphas, betas = [], []
+    w = hvp(v)
+    a = float(w @ v)
+    w = w - a * v
+    alphas.append(a)
+    for _ in range(1, iters):
+        beta = float(w.norm())
+        if beta < 1e-10:
+            break
+        v_new = w / beta
+        V.append(v_new)
+        w = hvp(v_new)
+        a = float(w @ v_new)
+        w = w - a * v_new - beta * V[-2]
+        # full re-orthogonalisation (cheap for iters ~ 20)
+        for u_ in V:
+            w = w - (w @ u_) * u_
+        alphas.append(a)
+        betas.append(beta)
+    T = torch.diag(torch.tensor(alphas, dtype=torch.float64))
+    if betas:
+        T += torch.diag(torch.tensor(betas, dtype=torch.float64), 1)
+        T += torch.diag(torch.tensor(betas, dtype=torch.float64), -1)
+    ev = torch.linalg.eigvalsh(T)
+    return {"lambda_min_est": float(ev.min()), "lambda_max_est": float(ev.max()), "lanczos_steps": len(alphas)}
 
 
 def linearized_predictions(model, X_rows: np.ndarray, dtheta: torch.Tensor, device,
-                           batch: int = 128) -> np.ndarray:
-    """p0 + (dp/dtheta) dtheta for every row, via forward-mode JVP; renormalised to the simplex."""
+                           batch: int = 128) -> Dict[str, object]:
+    """p0 + (dp/dtheta) dtheta for every row via forward-mode JVP.
+
+    Returns the RAW first-order prediction (may leave the simplex), a
+    projected version (clamp to >=1e-6, renormalise) that can be fed to the
+    attack model, and how much projection was needed."""
     model.eval()
     names = [n for n, _ in model.named_parameters()]
     base = {n: p.detach() for n, p in model.named_parameters()}
     tangent = dict(zip(names, unflatten(dtheta, [base[n] for n in names])))
-    out = []
+    raw, proj = [], []
     dt = model_dtype(model)
     for s in range(0, len(X_rows), batch):
         xb = torch.as_tensor(X_rows[s:s + batch], dtype=dt, device=device)
@@ -273,10 +336,19 @@ def linearized_predictions(model, X_rows: np.ndarray, dtheta: torch.Tensor, devi
             return torch.softmax(functional_call(model, params, (xb,)), dim=1)
 
         p0, dp = jvp(f, (base,), (tangent,))
-        p1 = torch.clamp(p0 + dp, min=1e-6)
+        p_raw = (p0 + dp).detach()
+        p1 = torch.clamp(p_raw, min=1e-6)
         p1 = p1 / p1.sum(dim=1, keepdim=True)
-        out.append(p1.detach().cpu().numpy())
-    return np.concatenate(out)
+        raw.append(p_raw.cpu().numpy()); proj.append(p1.cpu().numpy())
+    raw = np.concatenate(raw); proj = np.concatenate(proj)
+    neg_mass = np.clip(-raw, 0, None).sum(axis=1)
+    return {
+        "raw": raw, "projected": proj,
+        "row_clip_rate": float((raw.min(axis=1) < 0).mean()),
+        "mean_negative_mass": float(neg_mass.mean()),
+        "max_negative_mass": float(neg_mass.max()) if len(neg_mass) else 0.0,
+        "mean_projection_l1": float(np.abs(proj - raw).sum(axis=1).mean()),
+    }
 
 
 def frozen_self_scores(shadow, attack, X: np.ndarray, y: np.ndarray, idx: Sequence[int],
@@ -311,9 +383,20 @@ def main() -> None:
     ap.add_argument("--classes", type=int, nargs="*", default=None,
                     help="subset of qualified OCT classes to process (default: all qualified)")
     ap.add_argument("--damping_attack", type=float, default=1e-3)
-    ap.add_argument("--damping_shadow", type=float, default=1e-2)
+    ap.add_argument("--damping_shadow", type=float, default=1e-2,
+                    help="primary gamma_s; fix it BEFORE looking at correlations")
+    ap.add_argument("--damping_shadow_grid", type=float, nargs="*", default=[],
+                    help="extra gamma_s values; scores are recomputed for each and rank "
+                         "stability across the grid is reported (sensitivity, not selection)")
     ap.add_argument("--cg_iters", type=int, default=100)
     ap.add_argument("--cg_tol", type=float, default=1e-4)
+    ap.add_argument("--cg_fail_tol", type=float, default=1e-3,
+                    help="hard gate: a solve whose relative residual stays above this is flagged "
+                         "and its scores are marked unreliable")
+    ap.add_argument("--lanczos_iters", type=int, default=20,
+                    help="Lanczos steps for extreme eigenvalue estimates of H_s + (wd+gamma) I")
+    ap.add_argument("--j00_tol", type=float, default=1e-6,
+                    help="hard assertion: |J00_recomputed - J00 stored| must be below this")
     ap.add_argument("--hvp_batch", type=int, default=64,
                     help="images per double-backward chunk; lower it if memory is tight")
     ap.add_argument("--attack_seed_reps", type=int, default=0,
@@ -376,52 +459,83 @@ def main() -> None:
         hvp = make_hvp(base_model, X, y, affected_train, device, wd, args.damping_shadow, args.hvp_batch)
         diagnostics[f"seed{seed}"] = {"stage1_train_grad_norm": float(gL.norm()), "classes": {}}
 
+        # Stage-1 operator diagnostics (independent of class / attack seed)
+        n_params = int(sum(p.numel() for p in flat_params(base_model)))
+        lanczos = lanczos_extreme_eigs(hvp, n_params, args.lanczos_iters, device, model_dtype(base_model))
+        diagnostics[f"seed{seed}"]["stage1_damped_operator"] = {
+            **lanczos, "damping": args.damping_shadow, "weight_decay": wd,
+            "spd_by_lanczos": bool(lanczos["lambda_min_est"] > 0),
+        }
+        LOGGER.info("seed=%d Stage-1 damped operator: lambda_min~%.3e lambda_max~%.3e (%d Lanczos steps)",
+                    seed, lanczos["lambda_min_est"], lanczos["lambda_max_est"], lanczos["lanczos_steps"])
+        hvp_grid = {g: make_hvp(base_model, X, y, affected_train, device, wd, g, args.hvp_batch)
+                    for g in args.damping_shadow_grid if g != args.damping_shadow}
+
         for cls in loo_classes:
             tr = interface0["classes"] == cls
             te = target_queries["classes"] == cls
             attack_seed = int(seed * 100 + cls)
             n_reps = max(1, int(getattr(pargs, "attack_seed_reps", 1)))
+            rep_seeds = [attack_seed if r == 0 else attack_seed + 10007 * r for r in range(n_reps)]
 
             def train_attack(x_tr, m_tr, rep_seed):
                 return pilot.train_attack_model_deterministic(
                     x_tr, m_tr, rep_seed, pargs.attack_epochs, pargs.attack_lr,
                     pargs.attack_batch_size, n_hidden=64, deterministic=pargs.deterministic)
 
-            def ce_avg(x_tr, m_tr) -> float:
-                """Matched-class CE averaged over the same attack-seed reps 05 used."""
+            def ce_per_rep(x_tr, m_tr) -> List[float]:
                 vals = []
-                for rep in range(n_reps):
-                    rep_seed = attack_seed if rep == 0 else attack_seed + 10007 * rep
+                for rep_seed in rep_seeds:
                     m = train_attack(x_tr, m_tr, rep_seed)
                     pr = pilot.predict_attack_prob(m, target_queries["x"][te])
                     vals.append(pilot.binary_metrics(target_queries["membership"][te], pr)["cross_entropy"])
-                return float(np.mean(vals))
+                return vals
 
-            attack = train_attack(interface0["x"][tr], interface0["membership"][tr], attack_seed)
-            J00 = ce_avg(interface0["x"][tr], interface0["membership"][tr])
+            def ce_avg(x_tr, m_tr) -> float:
+                return float(np.mean(ce_per_rep(x_tr, m_tr)))
 
-            imp = attack_implicit_v(
-                attack, interface0["x"][tr], interface0["membership"][tr],
-                target_queries["x"][te], target_queries["membership"][te],
-                args.damping_attack, device)
-            v_all = imp["v"]                      # rows of class cls, all shadows
+            # one attack model, one v, one J00 per attack seed (score/truth matched per seed);
+            # h and w are linear in v, so mean_k score_k == score(mean_k v_k): one CG solve.
             tr_idx = np.where(tr)[0]
-            aff_cls = aff[tr]                     # affected-shadow rows within class rows
+            aff_cls = aff[tr]
             raw_aff = interface0["raw_index"][tr_idx[aff_cls]]
-            v_aff = v_all[aff_cls]
+            attacks, v_reps, J00_reps, imp_reps = [], [], [], []
+            for rep_seed in rep_seeds:
+                att = train_attack(interface0["x"][tr], interface0["membership"][tr], rep_seed)
+                pr = pilot.predict_attack_prob(att, target_queries["x"][te])
+                J00_reps.append(pilot.binary_metrics(target_queries["membership"][te], pr)["cross_entropy"])
+                imp = attack_implicit_v(
+                    att, interface0["x"][tr], interface0["membership"][tr],
+                    target_queries["x"][te], target_queries["membership"][te],
+                    args.damping_attack, device)
+                attacks.append(att); v_reps.append(imp["v"][aff_cls])
+                imp_reps.append({k: val for k, val in imp.items() if k not in ("v", "u")})
+            attack = attacks[0]
+            J00 = float(np.mean(J00_reps))
+            v_aff = np.mean(np.stack(v_reps), axis=0)
             h = shadow_h(base_model, X[raw_aff], v_aff, device)
             cg = conjugate_gradient(hvp, h, args.cg_iters, args.cg_tol)
             w = cg["x"]
+            cg_ok = (not cg["nonpositive_curvature"]) and cg["final_rel_residual"] is not None \
+                and cg["final_rel_residual"] <= args.cg_fail_tol
+            w_grid = {}
+            for g, hvp_g in hvp_grid.items():
+                cg_g = conjugate_gradient(hvp_g, h, args.cg_iters, args.cg_tol)
+                w_grid[g] = (cg_g["x"], cg_g)
             diagnostics[f"seed{seed}"]["classes"][str(cls)] = {
-                "J00_recomputed": float(J00),
-                "attack": {k: val for k, val in imp.items() if k not in ("v", "u")},
+                "J00_recomputed_per_attack_seed": J00_reps,
+                "attack_seeds": rep_seeds,
+                "attack_per_seed": imp_reps,
                 "h_norm": float(h.norm()),
-                "cg_iters": cg["iters"], "cg_final_rel_residual": cg["final_rel_residual"],
+                "cg": {k: val for k, val in cg.items() if k != "x"},
+                "cg_reliable": bool(cg_ok),
+                "cg_grid": {str(g): {k: val for k, val in c.items() if k != "x"} for g, (_, c) in w_grid.items()},
                 "n_affected_rows": int(len(raw_aff)),
+                "v_between_attack_seed_sd": float(np.std(np.stack(v_reps), axis=0).mean()) if n_reps > 1 else 0.0,
             }
-            LOGGER.info("seed=%d class=%d J00=%.6f |gradL_A|=%.2e H_A eig[%.2e, %.2e] |h|=%.3e CG iters=%d res=%.2e",
-                        seed, cls, J00, imp["train_grad_norm"], imp["hessian_eig_min"],
-                        imp["hessian_eig_max"], float(h.norm()), cg["iters"], cg["final_rel_residual"])
+            LOGGER.info("seed=%d class=%d J00=%.6f (K=%d) |gradL_A|=%.2e H_A eig[%.2e, %.2e] |h|=%.3e CG iters=%d res=%.2e reliable=%s",
+                        seed, cls, J00, n_reps, imp_reps[0]["train_grad_norm"], imp_reps[0]["hessian_eig_min"],
+                        imp_reps[0]["hessian_eig_max"], float(h.norm()), cg["iters"], cg["final_rel_residual"] or -1, cg_ok)
 
             for pat in [p for p in patients if int(p["oct_class"]) == cls]:
                 pid = int(pat["patient_id"])
@@ -432,19 +546,33 @@ def main() -> None:
                     LOGGER.warning("missing artifacts for seed=%d patient=%d; skipping", seed, pid)
                     continue
                 run = json.loads(run_path.read_text(encoding="utf-8"))
-                cond = {c: run["conditions"][c]["per_class"][str(cls)]["cross_entropy"]
-                        for c in ("J00", "J10", "J01", "J11")}
+                cond = {}
+                for c in ("J00", "J10", "J01", "J11"):
+                    entry = run["conditions"].get(c)
+                    cond[c] = None if entry is None else entry["per_class"][str(cls)]["cross_entropy"]
+                stored_reps = run["conditions"]["J00"]["per_class"][str(cls)].get("per_rep_cross_entropy")
+                if stored_reps is not None and len(stored_reps) == len(J00_reps):
+                    mismatch = float(np.max(np.abs(np.asarray(stored_reps) - np.asarray(J00_reps))))
+                else:
+                    mismatch = abs(J00 - cond["J00"])
+                if mismatch > args.j00_tol:
+                    raise RuntimeError(
+                        f"J00 reproduction failed for seed={seed} class={cls}: max |diff|={mismatch:.3e} "
+                        f"> {args.j00_tol}. The attack stage is not being replayed bit-exactly; "
+                        "check torch version / determinism flags before trusting any ladder number.")
                 npz = np.load(npz_path)
                 # align NPZ (affected rows, all classes) to class-cls affected rows
                 npz_cls = npz["oct_class"] == cls
                 assert np.array_equal(npz["raw_index"][npz_cls], raw_aff), "row alignment mismatch"
                 p0 = npz["p_baseline"][npz_cls]
                 p1 = npz["p_loo"][npz_cls]
+                deleted_rows = npz["is_deleted_patient"][npz_cls]
                 removed = np.asarray(pat["raw_indices"], dtype=np.int64)
 
                 # --- Stage-1 quantities for this patient
                 G = per_image_grads(base_model, X, y, removed, device)           # (n_i, d)
-                if_per_image = (G @ w / n_s).cpu().numpy()                       # Eq. 61
+                score_remove_per_image = (G @ w / n_s).cpu().numpy()             # Eq. 61: predicted J10-J00 share
+                score_upweight_per_image = (-(G @ w)).cpu().numpy()              # Eq. 78: IF^cont (unit upweight)
                 frozen_h = (G @ h).cpu().numpy()
                 loo_model = pilot.load_model(loo_path, X.shape[1], n_hidden, n_classes)
                 dtheta_true = flatten([q.detach() for q in flat_params(loo_model)]) - \
@@ -452,13 +580,17 @@ def main() -> None:
                 gsum = G.sum(dim=0)
                 cg_p = conjugate_gradient(hvp, gsum / n_s, args.cg_iters, args.cg_tol)
                 dtheta_hat = cg_p["x"]                                           # Eq. 56 with eps=-1/n
+                cg_p_ok = (not cg_p["nonpositive_curvature"]) and cg_p["final_rel_residual"] is not None \
+                    and cg_p["final_rel_residual"] <= args.cg_fail_tol
 
                 # --- ladder predictions of Delta_value
-                L1_lin = float((v_aff * (p1 - p0)).sum())
+                L1_reps = [float((v_k * (p1 - p0)).sum()) for v_k in v_reps]
+                L1_lin = float(np.mean(L1_reps))
                 L2_lin = float(h @ dtheta_true)
-                L3_lin = float(if_per_image.sum())
-                p1_hat_true = linearized_predictions(base_model, X[raw_aff], dtheta_true, device)
-                p1_hat_if = linearized_predictions(base_model, X[raw_aff], dtheta_hat, device)
+                L3_lin = float(score_remove_per_image.sum())
+                lin_true = linearized_predictions(base_model, X[raw_aff], dtheta_true, device)
+                lin_if = linearized_predictions(base_model, X[raw_aff], dtheta_hat, device)
+                p1_hat_true, p1_hat_if = lin_true["projected"], lin_if["projected"]
 
                 def retrain_ce(p_aff_rows: np.ndarray, membership: np.ndarray) -> float:
                     x_tr = interface0["x"][tr].copy()
@@ -469,23 +601,27 @@ def main() -> None:
                 M1 = pilot.membership_after_removal(interface0, removed, a)[tr]
                 L2_retrain = retrain_ce(p1_hat_true, M0) - J00
                 L3_retrain = retrain_ce(p1_hat_if, M0) - J00
-                L3_hybrid = retrain_ce(p1_hat_if, M1) - J00
-                L2_hybrid = retrain_ce(p1_hat_true, M1) - J00
-                # relabel-only prediction at baseline vectors (exact retrain, cheap) = J01 - J00
+                relabel_ok = cond["J11"] is not None
+                L3_hybrid = retrain_ce(p1_hat_if, M1) - J00 if relabel_ok else None
+                L2_hybrid = retrain_ce(p1_hat_true, M1) - J00 if relabel_ok else None
                 row = {
                     "seed": seed, "patient_id": pid, "oct_class": cls, "class_name": pat["class_name"],
-                    "n_images": len(removed),
+                    "n_images": len(removed), "attack_seed_reps": n_reps,
                     "J00": cond["J00"], "J10": cond["J10"], "J01": cond["J01"], "J11": cond["J11"],
-                    "J00_recomputed": J00,
+                    "J00_recomputed": J00, "J00_reproduction_max_abs_diff": mismatch,
                     "actual_value": cond["J10"] - cond["J00"],
-                    "actual_relabel": cond["J01"] - cond["J00"],
-                    "actual_full": cond["J11"] - cond["J00"],
-                    "actual_relabel_given_P1": cond["J11"] - cond["J10"],
+                    "actual_relabel": (cond["J01"] - cond["J00"]) if relabel_ok else None,
+                    "actual_full": (cond["J11"] - cond["J00"]) if relabel_ok else None,
+                    "actual_relabel_given_P1": (cond["J11"] - cond["J10"]) if relabel_ok else None,
                     "L1_lin_value": L1_lin,
+                    "L1_lin_value_per_attack_seed": json.dumps(L1_reps),
                     "L2_lin_value": L2_lin,
                     "L2_retrain_value": L2_retrain,
                     "L2_hybrid_full": L2_hybrid,
                     "L3_lin_value": L3_lin,
+                    "score_remove_patient": L3_lin,
+                    "score_upweight_patient_sum": float(score_upweight_per_image.sum()),
+                    "score_remove_per_image_mean": float(score_remove_per_image.mean()),
                     "L3_retrain_value": L3_retrain,
                     "L3_hybrid_full": L3_hybrid,
                     "frozen_h": float(frozen_h.sum()),
@@ -494,11 +630,20 @@ def main() -> None:
                     "dtheta_cosine": float((dtheta_true @ dtheta_hat) /
                                            (dtheta_true.norm() * dtheta_hat.norm() + 1e-30)),
                     "p1hat_true_mean_js_deleted": float(pilot.js_divergence(
-                        p0[npz["is_deleted_patient"][npz_cls]], p1_hat_true[npz["is_deleted_patient"][npz_cls]]).mean()),
+                        p0[deleted_rows], p1_hat_true[deleted_rows]).mean()),
                     "p1_true_mean_js_deleted": float(pilot.js_divergence(
-                        p0[npz["is_deleted_patient"][npz_cls]], p1[npz["is_deleted_patient"][npz_cls]]).mean()),
+                        p0[deleted_rows], p1[deleted_rows]).mean()),
+                    "p1hat_true_row_clip_rate": lin_true["row_clip_rate"],
+                    "p1hat_true_mean_projection_l1": lin_true["mean_projection_l1"],
+                    "p1hat_if_row_clip_rate": lin_if["row_clip_rate"],
+                    "p1hat_if_mean_projection_l1": lin_if["mean_projection_l1"],
+                    "cg_reliable": bool(cg_ok and cg_p_ok),
                     "cg_patient_iters": cg_p["iters"],
+                    "cg_patient_rel_residual": cg_p["final_rel_residual"],
+                    "cg_patient_min_rayleigh": cg_p["min_rayleigh_quotient"],
                 }
+                for g, (w_g, _) in w_grid.items():
+                    row[f"L3_lin_value_gamma{g:g}"] = float((G @ w_g / n_s).sum())
                 if not args.skip_frozen_self:
                     row["frozen_self"] = float(frozen_self_scores(base_model, attack, X, y, removed, device).sum())
 
@@ -514,13 +659,20 @@ def main() -> None:
                             return pilot.binary_metrics(target_queries["membership"][te], pr)["cross_entropy"]
                         j00 = ce(interface0["x"][tr], M0)
                         dv.append(ce(x_full, M0) - j00)
-                        df.append(ce(x_full, M1) - j00)
+                        if relabel_ok:
+                            df.append(ce(x_full, M1) - j00)
+                    row["attackseed_value_per_seed"] = json.dumps(dv)
+                    row["attackseed_full_per_seed"] = json.dumps(df)
                     row["attackseed_value_mean"] = float(np.mean(dv)); row["attackseed_value_sd"] = float(np.std(dv, ddof=1)) if len(dv) > 1 else None
-                    row["attackseed_full_mean"] = float(np.mean(df)); row["attackseed_full_sd"] = float(np.std(df, ddof=1)) if len(df) > 1 else None
+                    row["attackseed_full_mean"] = float(np.mean(df)) if df else None
+                    row["attackseed_full_sd"] = float(np.std(df, ddof=1)) if len(df) > 1 else None
                 rows.append(row)
-                LOGGER.info("seed=%d pid=%d actual value=%+.5f full=%+.5f | L1=%+.5f L2=%+.5f/%+.5f L3=%+.5f/%+.5f hybrid=%+.5f cos=%.3f",
-                            seed, pid, row["actual_value"], row["actual_full"], L1_lin, L2_lin, L2_retrain,
-                            L3_lin, L3_retrain, L3_hybrid, row["dtheta_cosine"])
+                LOGGER.info("seed=%d pid=%d actual value=%+.5f full=%s | L1=%+.5f L2=%+.5f/%+.5f L3=%+.5f/%+.5f hybrid=%s cos=%.3f reliable=%s",
+                            seed, pid, row["actual_value"],
+                            "n/a" if row["actual_full"] is None else f"{row['actual_full']:+.5f}",
+                            L1_lin, L2_lin, L2_retrain, L3_lin, L3_retrain,
+                            "n/a" if L3_hybrid is None else f"{L3_hybrid:+.5f}",
+                            row["dtheta_cosine"], row["cg_reliable"])
                 write_rows(out_dir / "ladder_rows.csv", rows)
 
     write_rows(out_dir / "ladder_rows.csv", rows)
@@ -543,6 +695,8 @@ def write_rows(path: Path, rows: List[dict]) -> None:
 
 
 def analyze(rows: List[dict]) -> Dict[str, object]:
+    """Descriptive correlations.  Rows whose CG solves were flagged unreliable are
+    excluded from the score-based pairs (they stay in the CSV)."""
     from scipy.stats import pearsonr, spearmanr
     if len(rows) < 3:
         return {"n": len(rows)}
@@ -555,18 +709,32 @@ def analyze(rows: List[dict]) -> Dict[str, object]:
                  ("L3_lin_value", "actual_full"), ("frozen_h", "actual_full"),
                  ("frozen_self", "actual_full")],
     }
+    needs_cg = {"L3_lin_value", "L3_retrain_value", "L3_hybrid_full"}
 
     def corr(xs, ys):
-        xs, ys = np.asarray(xs, float), np.asarray(ys, float)
-        if len(xs) < 3 or xs.std() == 0 or ys.std() == 0:
+        pairs_ = [(x, y_) for x, y_ in zip(xs, ys) if x is not None and y_ is not None
+                  and np.isfinite(x) and np.isfinite(y_)]
+        if len(pairs_) < 3:
+            return {"n": int(len(pairs_))}
+        xs, ys = np.asarray([p[0] for p in pairs_], float), np.asarray([p[1] for p in pairs_], float)
+        if xs.std() == 0 or ys.std() == 0:
             return {"n": int(len(xs))}
+        slope, intercept = np.polyfit(xs, ys, 1)
         return {"n": int(len(xs)), "spearman": float(spearmanr(xs, ys)[0]),
                 "pearson": float(pearsonr(xs, ys)[0]),
                 "sign_agreement": float(np.mean(np.sign(xs) == np.sign(ys))),
+                "mae": float(np.mean(np.abs(xs - ys))),
+                "slope_actual_on_pred": float(slope), "intercept": float(intercept),
                 "pred_mean": float(xs.mean()), "actual_mean": float(ys.mean()),
                 "pred_sd": float(xs.std(ddof=1)), "actual_sd": float(ys.std(ddof=1))}
 
-    out = {"per_patient_seed": {}, "per_patient_mean": {}}
+    def mean_or_none(vals):
+        vals = [v for v in vals if v is not None and np.isfinite(v)]
+        return float(np.mean(vals)) if vals else None
+
+    out = {"per_patient_seed": {}, "per_patient_mean": {}, "note": (
+        "descriptive only; pilot n is tiny. Rows with cg_reliable=False are dropped "
+        "from L3 pairs. Use patient-level bootstrap for CIs in the formal run.")}
     by_pid: Dict[int, List[dict]] = {}
     for r in rows:
         by_pid.setdefault(int(r["patient_id"]), []).append(r)
@@ -574,16 +742,34 @@ def analyze(rows: List[dict]) -> Dict[str, object]:
         for pk, ak in plist:
             if pk not in rows[0]:
                 continue
-            out["per_patient_seed"][f"{pk}~{ak}"] = corr([r[pk] for r in rows], [r[ak] for r in rows])
+            use = [r for r in rows if r.get("cg_reliable", True) or pk not in needs_cg]
+            out["per_patient_seed"][f"{pk}~{ak}"] = corr([r[pk] for r in use], [r[ak] for r in use])
+            by_pid_use: Dict[int, List[dict]] = {}
+            for r in use:
+                by_pid_use.setdefault(int(r["patient_id"]), []).append(r)
             out["per_patient_mean"][f"{pk}~{ak}"] = corr(
-                [np.mean([r[pk] for r in rs]) for rs in by_pid.values()],
-                [np.mean([r[ak] for r in rs]) for rs in by_pid.values()])
+                [mean_or_none([r[pk] for r in rs]) for rs in by_pid_use.values()],
+                [mean_or_none([r[ak] for r in rs]) for rs in by_pid_use.values()])
+    # damping-grid rank stability of the Stage-1 implicit score
+    grid_keys = sorted(k for k in rows[0] if k.startswith("L3_lin_value_gamma"))
+    if grid_keys:
+        base = [r["L3_lin_value"] for r in rows]
+        out["damping_sensitivity"] = {
+            k: {"spearman_vs_primary": float(spearmanr(base, [r[k] for r in rows])[0]),
+                "mean_abs_ratio_vs_primary": float(np.mean([abs(r[k]) for r in rows]) /
+                                                   (np.mean([abs(b) for b in base]) + 1e-30))}
+            for k in grid_keys
+        }
     if "attackseed_value_sd" in rows[0]:
         out["stage2_only_noise"] = {
-            "mean_sd_value": float(np.mean([r["attackseed_value_sd"] for r in rows if r["attackseed_value_sd"] is not None])),
-            "mean_sd_full": float(np.mean([r["attackseed_full_sd"] for r in rows if r["attackseed_full_sd"] is not None])),
+            "mean_sd_value": mean_or_none([r["attackseed_value_sd"] for r in rows]),
+            "mean_sd_full": mean_or_none([r.get("attackseed_full_sd") for r in rows]),
+            "note": "SD across independent attack seeds with Stage 1 frozen; compare with "
+                    "between-Stage-1-seed SD from 06 to split sigma_A^2 and sigma_S^2",
         }
     out["dtheta_cosine_mean"] = float(np.mean([r["dtheta_cosine"] for r in rows]))
+    out["n_rows"] = len(rows)
+    out["n_rows_cg_reliable"] = int(sum(bool(r.get("cg_reliable", True)) for r in rows))
     return out
 
 

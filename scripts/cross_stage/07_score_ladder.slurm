@@ -36,5 +36,6 @@ echo "=== 07 score ladder ==="
 python scripts/cross_stage/07_cross_stage_score_ladder.py \
   --pilot_dir "$PILOT_DIR" --data_dir "$DATA_DIR" \
   --attack_seed_reps "$ATTACK_SEED_REPS" --cg_iters 100 --cg_tol 1e-4 \
-  --damping_attack 1e-3 --damping_shadow 1e-2 --hvp_batch 128
+  --damping_attack 1e-3 --damping_shadow 1e-2 --damping_shadow_grid 3e-3 3e-2 1e-1 \
+  --lanczos_iters 30 --cg_fail_tol 1e-3 --hvp_batch 128
 echo "=== Finished: $(date) ==="

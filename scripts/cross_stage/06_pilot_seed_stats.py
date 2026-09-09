@@ -59,7 +59,12 @@ DERIVED = {
 
 def describe(values: np.ndarray) -> Dict[str, object]:
     v = np.asarray(values, dtype=float)
+    v = v[np.isfinite(v)]
     n = len(v)
+    if n == 0:
+        return {"n_seeds": 0, "mean": None, "sd": None, "var": None, "min": None, "max": None,
+                "range": None, "pos_frac": None, "neg_frac": None, "majority_direction": None,
+                "sign_concordance": None, "mean_over_se": None, "values": []}
     out = {
         "n_seeds": int(n),
         "mean": float(v.mean()),
@@ -100,14 +105,12 @@ def load_condition_levels(pilot_dir: Path) -> Dict[tuple, dict]:
         r = json.loads(p.read_text(encoding="utf-8"))
         cls = str(r["patient"]["oct_class"])
         key = (int(r["seed"]), int(r["patient"]["patient_id"]))
-        out[key] = {
-            cond: float(r["conditions"][cond]["per_class"][cls]["cross_entropy"])
-            for cond in ("J00", "J10", "J01", "J11")
-        }
-        out[key].update({
-            f"{cond}_auc": float(r["conditions"][cond]["per_class"][cls]["auc"])
-            for cond in ("J00", "J10", "J01", "J11")
-        })
+        def get(cond, key):
+            entry = r["conditions"].get(cond)
+            return None if entry is None else float(entry["per_class"][cls][key])
+        out[key] = {cond: get(cond, "cross_entropy") for cond in ("J00", "J10", "J01", "J11")}
+        out[key].update({f"{cond}_auc": get(cond, "auc") for cond in ("J00", "J10", "J01", "J11")})
+        out[key]["membership_conditions_evaluated"] = r.get("membership_conditions_evaluated", "J00,J10,J01,J11")
     return out
 
 
@@ -163,13 +166,17 @@ def main() -> None:
     for cname, recs in classes.items():
         class_summary[cname] = {}
         for name in recs[0]["endpoints"]:
-            means = np.asarray([r["endpoints"][name]["mean"] for r in recs])
-            sds = np.asarray([r["endpoints"][name]["sd"] or 0.0 for r in recs])
+            means = np.asarray([r["endpoints"][name]["mean"] for r in recs], dtype=float)
+            sds = [r["endpoints"][name]["sd"] for r in recs if r["endpoints"][name]["sd"] is not None]
+            vars_ = [r["endpoints"][name]["var"] for r in recs if r["endpoints"][name]["var"] is not None]
             class_summary[cname][name] = {
                 "n_patients": int(len(recs)),
-                "mean_of_patient_means": float(means.mean()),
-                "sd_between_patients": float(means.std(ddof=1)) if len(recs) > 1 else None,
-                "mean_within_patient_seed_sd": float(sds.mean()),
+                "mean_of_patient_means": float(np.nanmean(means)),
+                "sd_between_patients": float(np.nanstd(means, ddof=1)) if len(recs) > 1 else None,
+                "mean_within_patient_seed_sd": float(np.mean(sds)) if sds else None,
+                "rms_within_patient_seed_sd": float(np.sqrt(np.mean(vars_))) if vars_ else None,
+                "seed_variance_note": ("seeds change Stage 1 AND attack seed together in the pilot: "
+                                       "combined algorithmic variance, not Stage-1-only"),
                 "patients_positive": int((means > 0).sum()),
                 "patients_negative": int((means < 0).sum()),
             }
@@ -210,21 +217,26 @@ def main() -> None:
     # console table
     print(f"{'pid':>6} {'class':>7} {'img':>4} | {'full_ce mean':>12} {'sd':>9} {'min':>9} {'max':>9} "
           f"{'maj':>9} | {'value':>9} {'J11-J10':>9} | {'full_auc':>9}")
+    def fmt(v, w=9, plus=True):
+        if v is None:
+            return f"{'n/a':>{w}}"
+        return f"{v:>+{w}.6f}" if plus else f"{v:>{w}.6f}"
     for rec in patients:
         e = rec["endpoints"]
         fc = e["full_ce"]
         print(f"{rec['patient_id']:>6} {rec['class_name']:>7} {rec['n_images']:>4} | "
-              f"{fc['mean']:>+12.6f} {fc['sd'] or 0:>9.6f} {fc['min']:>+9.6f} {fc['max']:>+9.6f} "
-              f"{fc['majority_direction']:>9} | {e['value_ce']['mean']:>+9.6f} "
-              f"{e['relabel_given_P1_ce']['mean']:>+9.6f} | {e['full_auc']['mean']:>+9.6f}")
+              f"{fmt(fc['mean'], 12)} {fmt(fc['sd'], plus=False)} {fmt(fc['min'])} {fmt(fc['max'])} "
+              f"{str(fc['majority_direction']):>9} | {fmt(e['value_ce']['mean'])} "
+              f"{fmt(e['relabel_given_P1_ce']['mean'])} | {fmt(e['full_auc']['mean'])}")
     print("\nclass summary (mean of patient means / mean within-patient seed SD):")
     for cname, s in class_summary.items():
         for name in ("full_ce", "value_ce", "relabel_ce", "interaction_ce",
                      "relabel_given_P1_ce", "value_given_M1_ce"):
             if name in s:
+                bp = s[name]['sd_between_patients']; wp = s[name]['rms_within_patient_seed_sd']
                 print(f"  {cname:>7} {name:>22}: {s[name]['mean_of_patient_means']:+.6f} "
-                      f"(between-patient SD {s[name]['sd_between_patients'] or 0:.6f}, "
-                      f"within-patient seed SD {s[name]['mean_within_patient_seed_sd']:.6f})")
+                      f"(between-patient SD {'n/a' if bp is None else f'{bp:.6f}'}, "
+                      f"RMS within-patient seed SD {'n/a' if wp is None else f'{wp:.6f}'})")
     print(f"\nwrote {out_csv}\nwrote {out_json}")
 
 

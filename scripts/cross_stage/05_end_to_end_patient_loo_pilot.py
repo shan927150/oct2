@@ -129,12 +129,30 @@ def parse_args() -> argparse.Namespace:
                     help=("train the Stage-2 attack under this many attack seeds per condition "
                           "and average the metrics (Stage-2 noise reduction); per-seed values "
                           "are stored too.  1 = pilot behaviour."))
-    ap.add_argument("--placebo_replays", type=int, default=0,
+    ap.add_argument("--trajectory_replays", "--placebo_replays", dest="trajectory_replays",
+                    type=int, default=0,
                     help=("per seed, retrain Stage 1 with NO deletion but a different dropout/"
-                          "trajectory RNG stream, and evaluate J00-style attack metrics; gives the "
-                          "noise floor for the paired delta-CE against which patient effects are judged"))
+                          "trajectory RNG stream and evaluate J00-style attack metrics.  This is a "
+                          "trajectory-sensitivity distribution (how much the paired delta moves when "
+                          "only the RNG stream changes), not a strict null; no-op replay (=0) is the "
+                          "reproducibility test."))
     ap.add_argument("--save_epoch_checkpoints", type=int, nargs="*", default=[],
-                    help="epochs (1-based, after completion) at which baseline Stage-1 weights are saved")
+                    help="epochs (1-based, after completion) at which baseline Stage-1 weights, Adam "
+                         "state and RNG states are saved")
+    ap.add_argument("--deletion_mode", choices=["filter_rechunk", "fixed_mask"], default="filter_rechunk",
+                    help=("filter_rechunk (pilot): drop the rows and re-chunk the epoch order into "
+                          "batches -> later batch boundaries and the dropout RNG stream shift.  "
+                          "fixed_mask: keep every baseline batch tensor and forward pass, set the "
+                          "per-example loss weight of removed rows to 0 (denominator = baseline batch "
+                          "size) -> exactly the fixed-minibatch perturbation of Eq. 62-74, dropout "
+                          "draws aligned with the baseline."))
+    ap.add_argument("--deletion_weight", type=float, default=1.0,
+                    help=("fixed_mask only: fraction alpha removed; per-example loss weight becomes "
+                          "1-alpha.  1.0 = full deletion; 0.1/0.25/0.5 give the dose-response ladder."))
+    ap.add_argument("--window_membership", choices=["value_only", "relabel"], default="value_only",
+                    help=("for partial --removal_epochs runs: value_only (default) evaluates only "
+                          "J00/J10 because a partially exposed patient has no binary membership "
+                          "label; relabel forces J01/J11 anyway (not recommended)."))
     return ap.parse_args()
 
 
@@ -207,15 +225,23 @@ def train_classifier_from_orders(
     trajectory_noise_seed: int | None = None,
     epoch_checkpoint_dir: Path | None = None,
     epoch_checkpoints: Sequence[int] = (),
+    deletion_mode: str = "filter_rechunk",
+    deletion_weight: float = 1.0,
 ) -> Tuple[torch.nn.Module, Dict[str, float]]:
     """Train SmallCNN using a recorded baseline raw-index order.
 
-    A LOO run removes the excluded raw indices from every recorded epoch (or
-    only from epochs inside ``removal_window`` = (start, end)).  All remaining
-    examples keep the same relative order as the paired baseline.
+    filter_rechunk (pilot): a LOO run removes the excluded raw indices from
+    every recorded epoch (or only from epochs inside ``removal_window``) and
+    re-chunks the remaining order into batches.
+
+    fixed_mask: every baseline batch is kept and forwarded unchanged (so the
+    dropout RNG stream is identical to the baseline); excluded rows get
+    per-example loss weight ``1 - deletion_weight`` and the denominator stays
+    the baseline batch size.  This is the fixed-minibatch perturbation assumed
+    by Eq. 62-74 (with deletion_weight=1 the row simply contributes nothing).
 
     ``trajectory_noise_seed`` re-seeds torch AFTER model initialisation so that
-    only the dropout / trajectory RNG stream changes (placebo replay).
+    only the dropout / trajectory RNG stream changes (trajectory replay).
     """
     seed_everything(seed, deterministic)
     n_classes = int(np.max(y)) + 1
@@ -227,38 +253,81 @@ def train_classifier_from_orders(
     optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     criterion = nn.CrossEntropyLoss()
     excluded_all = set(int(v) for v in excluded_indices)
+    if deletion_mode not in ("filter_rechunk", "fixed_mask"):
+        raise ValueError(f"unknown deletion_mode {deletion_mode}")
+    if not 0.0 < deletion_weight <= 1.0:
+        raise ValueError("deletion_weight must be in (0, 1]")
+    if deletion_mode == "filter_rechunk" and deletion_weight != 1.0:
+        raise ValueError("--deletion_weight < 1 requires --deletion_mode fixed_mask")
+    excluded_tensor = torch.as_tensor(sorted(excluded_all), dtype=torch.int64, device=DEVICE)
+    n_epochs_full_exposure = 0
+    n_epochs_partial_exposure = 0
 
     for epoch, base_order in enumerate(train_orders):
         in_window = (removal_window is None or
                      removal_window[0] <= epoch < removal_window[1])
         excluded = excluded_all if in_window else set()
-        if excluded:
-            order = np.asarray([v for v in base_order if int(v) not in excluded], dtype=np.int64)
-        else:
+        if not excluded or deletion_mode == "fixed_mask":
             order = base_order
+        else:
+            order = np.asarray([v for v in base_order if int(v) not in excluded], dtype=np.int64)
         if len(order) == 0:
             raise ValueError("LOO removed every Stage-1 training image")
+        if excluded_all and not excluded:
+            n_epochs_full_exposure += 1          # outside the removal window
+        elif excluded_all and deletion_weight < 1.0:
+            n_epochs_partial_exposure += 1       # dose-response: weight 1-alpha
         model.train()
         for batch_idx in _iter_batches(order, batch_size):
             xb = torch.as_tensor(X[batch_idx], dtype=torch.float32, device=DEVICE)
             yb = torch.as_tensor(y[batch_idx], dtype=torch.long, device=DEVICE)
             optimizer.zero_grad(set_to_none=True)
-            loss = criterion(model(xb), yb)
+            if deletion_mode == "fixed_mask":
+                # identical forward pass (and dropout draws) to the baseline;
+                # only the per-example loss weights differ.
+                per_example = nn.functional.cross_entropy(model(xb), yb, reduction="none")
+                weights = torch.ones_like(per_example)
+                if excluded:
+                    idx_t = torch.as_tensor(batch_idx, dtype=torch.int64, device=DEVICE)
+                    removed = torch.isin(idx_t, excluded_tensor)
+                    weights = torch.where(removed, weights * (1.0 - deletion_weight), weights)
+                loss = (weights * per_example).sum() / per_example.numel()
+            else:
+                loss = criterion(model(xb), yb)
             loss.backward()
             optimizer.step()
         if epoch_checkpoint_dir is not None and (epoch + 1) in set(int(e) for e in epoch_checkpoints):
+            rng_states = {"torch_cpu": torch.get_rng_state()}
+            if torch.cuda.is_available():
+                rng_states["torch_cuda"] = torch.cuda.get_rng_state_all()
             save_model(epoch_checkpoint_dir / f"epoch{epoch + 1:03d}.pt", model,
                        {"seed": seed, "epoch": epoch + 1,
                         "excluded_indices": sorted(excluded_all),
-                        "optimizer_state": optimizer.state_dict()})
+                        "removal_window": list(removal_window) if removal_window else None,
+                        "deletion_mode": deletion_mode, "deletion_weight": deletion_weight,
+                        "epoch_order_sha256": hashlib.sha256(
+                            np.ascontiguousarray(train_orders).tobytes()).hexdigest()[:16],
+                        "optimizer_state": optimizer.state_dict(),
+                        "rng_states": rng_states})
 
     effective_train = np.asarray(
         [v for v in train_orders[0] if int(v) not in excluded_all], dtype=np.int64)
+    exposure = {
+        "n_excluded_images": int(len(excluded_all)),
+        "n_epochs_total": int(len(train_orders)),
+        "n_epochs_with_full_exposure": int(n_epochs_full_exposure),
+        "n_epochs_with_partial_exposure": int(n_epochs_partial_exposure),
+        "removal_window": list(removal_window) if removal_window else None,
+        "deletion_mode": deletion_mode,
+        "deletion_weight": float(deletion_weight),
+        "fully_removed": bool(excluded_all) and removal_window is None and deletion_weight == 1.0,
+    }
     metrics = {
         "train_accuracy": classification_accuracy(model, X, y, effective_train),
         "heldout_accuracy": classification_accuracy(model, X, y, eval_indices),
         "n_train_images": int(len(effective_train)),
         "n_heldout_images": int(len(eval_indices)),
+        "exposure": exposure,
     }
     model.eval()
     return model, metrics
@@ -515,6 +584,7 @@ def evaluate_attack_condition(
 ):
     per_class: Dict[str, object] = {}
     probabilities: Dict[str, np.ndarray] = {}
+    all_rep_probs: Dict[str, List[np.ndarray]] = {}
     for cls in classes:
         tr = train_classes == cls
         te = target["classes"] == cls
@@ -534,6 +604,7 @@ def evaluate_attack_condition(
             prob = predict_attack_prob(model, target["x"][te])
             if rep == 0:
                 probabilities[str(cls)] = prob
+            all_rep_probs.setdefault(str(cls), []).append(prob)
             rep_metrics.append(binary_metrics(target["membership"][te], prob))
         numeric_keys = ("accuracy", "balanced_accuracy", "auc", "cross_entropy", "member_recall")
         averaged = {k: float(np.mean([m[k] for m in rep_metrics])) for k in numeric_keys}
@@ -551,9 +622,15 @@ def evaluate_attack_condition(
     numeric = ("accuracy", "balanced_accuracy", "auc", "cross_entropy", "member_recall")
     macro = {key: float(np.mean([per_class[str(c)][key] for c in classes])) for key in numeric}
     metrics = {"per_class": per_class, "macro": macro}
+    metrics["_rep_probabilities"] = {k: np.stack(v) for k, v in all_rep_probs.items()}
     if return_probabilities:
         return metrics, probabilities
     return metrics
+
+
+def pop_rep_probabilities(metrics: Dict[str, object]) -> Dict[str, np.ndarray]:
+    """Remove the (non-JSON) per-rep probability arrays from a metrics dict."""
+    return metrics.pop("_rep_probabilities", {}) if isinstance(metrics, dict) else {}
 
 
 def attack_gate(metrics: Mapping[str, object], args: argparse.Namespace) -> Dict[str, object]:
@@ -605,7 +682,10 @@ def subset_attack_metrics(
         key: float(np.mean([per_class[str(cls)][key] for cls in classes]))
         for key in numeric
     }
-    return {"per_class": per_class, "macro": macro}
+    out = {"per_class": per_class, "macro": macro}
+    if "_rep_probabilities" in metrics:
+        out["_rep_probabilities"] = {str(cls): metrics["_rep_probabilities"][str(cls)] for cls in classes}
+    return out
 
 
 def endpoint_deltas(
@@ -613,10 +693,21 @@ def endpoint_deltas(
 ) -> Dict[str, object]:
     keys = ("accuracy", "balanced_accuracy", "auc", "cross_entropy", "member_recall")
 
-    def diff(a: str, b: str, level: str, cls: str | None = None) -> Dict[str, float]:
+    def diff(a: str, b: str, level: str, cls: str | None = None) -> Dict[str, float | None]:
+        if conditions.get(a) is None or conditions.get(b) is None:
+            return {key: None for key in keys}
         aa = conditions[a][level] if cls is None else conditions[a][level][cls]
         bb = conditions[b][level] if cls is None else conditions[b][level][cls]
         return {key: float(aa[key] - bb[key]) for key in keys}
+
+    def interaction(level: str, cls: str | None = None) -> Dict[str, float | None]:
+        if any(conditions.get(c) is None for c in CONDITIONS):
+            return {key: None for key in keys}
+
+        def get(c):
+            return conditions[c][level] if cls is None else conditions[c][level][cls]
+        return {key: float(get("J11")[key] - get("J10")[key] - get("J01")[key] + get("J00")[key])
+                for key in keys}
 
     out = {
         "macro": {
@@ -633,20 +724,9 @@ def endpoint_deltas(
             "relabel_J01_minus_J00": diff("J01", "J00", "per_class", cls),
             "full_J11_minus_J00": diff("J11", "J00", "per_class", cls),
         }
-    for level, rows in (("macro", out["macro"]),):
-        rows["interaction_J11_minus_J10_minus_J01_plus_J00"] = {
-            key: float(conditions["J11"][level][key] - conditions["J10"][level][key]
-                       - conditions["J01"][level][key] + conditions["J00"][level][key])
-            for key in keys
-        }
+    out["macro"]["interaction_J11_minus_J10_minus_J01_plus_J00"] = interaction("macro")
     for cls, rows in out["per_class"].items():
-        rows["interaction_J11_minus_J10_minus_J01_plus_J00"] = {
-            key: float(conditions["J11"]["per_class"][cls][key]
-                       - conditions["J10"]["per_class"][cls][key]
-                       - conditions["J01"]["per_class"][cls][key]
-                       + conditions["J00"]["per_class"][cls][key])
-            for key in keys
-        }
+        rows["interaction_J11_minus_J10_minus_J01_plus_J00"] = interaction("per_class", cls)
     matched_key = str(matched_class)
     if matched_key not in out["per_class"]:
         raise RuntimeError(
@@ -748,11 +828,14 @@ def train_or_load_stage1(
         excluded_indices=excluded_indices, removal_window=window,
         trajectory_noise_seed=trajectory_noise_seed,
         epoch_checkpoint_dir=epoch_checkpoint_dir,
-        epoch_checkpoints=args.save_epoch_checkpoints)
+        epoch_checkpoints=args.save_epoch_checkpoints,
+        deletion_mode=args.deletion_mode, deletion_weight=args.deletion_weight)
     save_model(path, model, {
         "seed": seed,
         "excluded_indices": list(map(int, excluded_indices)),
         "removal_window": list(window) if window else None,
+        "deletion_mode": args.deletion_mode,
+        "deletion_weight": args.deletion_weight,
         "trajectory_noise_seed": trajectory_noise_seed,
         "metrics": metrics,
     })
@@ -777,6 +860,9 @@ def write_flat_summary(out_dir: Path, results: Sequence[Mapping[str, object]]) -
         value = matched["value_J10_minus_J00"]
         relabel = matched["relabel_J01_minus_J00"]
         macro_full = result["endpoint_deltas"]["macro"]["full_J11_minus_J00"]
+
+        def nz(v):
+            return float("nan") if v is None else v
         rows.append({
             "seed": result["seed"],
             "patient_id": result["patient"]["patient_id"],
@@ -789,14 +875,15 @@ def write_flat_summary(out_dir: Path, results: Sequence[Mapping[str, object]]) -
             "all_affected_mean_js": drifts["all_affected_shadow_rows"]["mean_js"],
             "all_affected_mean_l1": drifts["all_affected_shadow_rows"]["mean_l1"],
             "all_affected_max_abs": drifts["all_affected_shadow_rows"]["max_abs"],
-            "primary_delta_full_matched_cross_entropy": full["cross_entropy"],
-            "delta_full_matched_accuracy": full["accuracy"],
-            "delta_full_matched_balanced_accuracy": full["balanced_accuracy"],
-            "delta_full_matched_auc": full["auc"],
-            "delta_value_matched_cross_entropy": value["cross_entropy"],
-            "delta_relabel_matched_cross_entropy": relabel["cross_entropy"],
-            "delta_full_macro_cross_entropy": macro_full["cross_entropy"],
-            "delta_full_macro_auc": macro_full["auc"],
+            "primary_delta_full_matched_cross_entropy": nz(full["cross_entropy"]),
+            "delta_full_matched_accuracy": nz(full["accuracy"]),
+            "delta_full_matched_balanced_accuracy": nz(full["balanced_accuracy"]),
+            "delta_full_matched_auc": nz(full["auc"]),
+            "delta_value_matched_cross_entropy": nz(value["cross_entropy"]),
+            "delta_relabel_matched_cross_entropy": nz(relabel["cross_entropy"]),
+            "delta_full_macro_cross_entropy": nz(macro_full["cross_entropy"]),
+            "delta_full_macro_auc": nz(macro_full["auc"]),
+            "membership_conditions_evaluated": result.get("membership_conditions_evaluated", "J00,J10,J01,J11"),
         })
     path = out_dir / "patient_seed_summary.csv"
     with path.open("w", newline="", encoding="utf-8") as f:
@@ -832,9 +919,10 @@ def aggregate_analysis(
 
         def matched_effect(pathway: str, metric: str) -> np.ndarray:
             return np.asarray([
-                r["endpoint_deltas"]["matched_class"][pathway][metric]
+                np.nan if r["endpoint_deltas"]["matched_class"][pathway][metric] is None
+                else r["endpoint_deltas"]["matched_class"][pathway][metric]
                 for r in runs
-            ])
+            ], dtype=float)
 
         d_ce = matched_effect("full_J11_minus_J00", "cross_entropy")
         d_auc = matched_effect("full_J11_minus_J00", "auc")
@@ -844,6 +932,7 @@ def aggregate_analysis(
         d_relabel_ce = matched_effect("relabel_J01_minus_J00", "cross_entropy")
 
         def sign_concordance(values: np.ndarray) -> float | None:
+            values = values[np.isfinite(values)]
             if len(values) < 2:
                 return None
             return float(max((values > 0).mean(), (values < 0).mean()))
@@ -855,12 +944,12 @@ def aggregate_analysis(
             "n_images": int(runs[0]["patient"]["n_images"]),
             "n_seeds": len(runs),
             **{key: float(values.mean()) for key, values in drift_arrays.items()},
-            "mean_delta_full_matched_cross_entropy": float(d_ce.mean()),
-            "mean_delta_full_matched_auc": float(d_auc.mean()),
-            "mean_delta_full_matched_balanced_accuracy": float(d_bacc.mean()),
-            "mean_delta_full_matched_accuracy": float(d_acc.mean()),
-            "mean_delta_value_matched_cross_entropy": float(d_value_ce.mean()),
-            "mean_delta_relabel_matched_cross_entropy": float(d_relabel_ce.mean()),
+            "mean_delta_full_matched_cross_entropy": float(np.nanmean(d_ce)) if np.isfinite(d_ce).any() else None,
+            "mean_delta_full_matched_auc": float(np.nanmean(d_auc)) if np.isfinite(d_auc).any() else None,
+            "mean_delta_full_matched_balanced_accuracy": float(np.nanmean(d_bacc)) if np.isfinite(d_bacc).any() else None,
+            "mean_delta_full_matched_accuracy": float(np.nanmean(d_acc)) if np.isfinite(d_acc).any() else None,
+            "mean_delta_value_matched_cross_entropy": float(np.nanmean(d_value_ce)),
+            "mean_delta_relabel_matched_cross_entropy": float(np.nanmean(d_relabel_ce)) if np.isfinite(d_relabel_ce).any() else None,
             "seed_sign_concordance_matched_cross_entropy": sign_concordance(d_ce),
             "seed_sign_concordance_matched_auc": sign_concordance(d_auc),
         })
@@ -936,6 +1025,8 @@ def aggregate_analysis(
         "deleted_patient_mean_js", "retained_members_mean_js",
         "nonmembers_mean_js", "all_affected_mean_js")
     primary_effect = "mean_delta_full_matched_cross_entropy"
+    if patient_rows and all(r[primary_effect] is None for r in patient_rows):
+        primary_effect = "mean_delta_value_matched_cross_entropy"  # windowed / value-only runs
     return {
         "qualification": "pilot/descriptive; matched-class CE is primary; no confirmatory p-values",
         "patient_seed_aggregation": patient_rows,
@@ -980,6 +1071,16 @@ def main() -> None:
         raise ValueError("--enforce_noop_gate requires --noop_replays >= 1")
     if args.noop_tolerance < 0:
         raise ValueError("--noop_tolerance must be nonnegative")
+    if args.deletion_weight != 1.0 and args.deletion_mode != "fixed_mask":
+        raise ValueError("--deletion_weight < 1 requires --deletion_mode fixed_mask")
+    partial_window = args.removal_epochs is not None and \
+        parse_removal_window(args.removal_epochs, args.shadow_epochs) != (0, args.shadow_epochs)
+    partial_exposure = partial_window or args.deletion_weight < 1.0
+    relabel_conditions = not partial_exposure or args.window_membership == "relabel"
+    if partial_exposure and not relabel_conditions:
+        LOGGER.warning("Partial exposure run (%s, weight=%.2f): J01/J11 are skipped; "
+                       "primary endpoint is J10-J00 (value pathway).",
+                       args.removal_epochs, args.deletion_weight)
     LOGGER.info("Project module layout: %s", MODULE_DIR)
 
     cfg = build_config(args)
@@ -1010,7 +1111,9 @@ def main() -> None:
         now = {k: v for k, v in vars(args).items() if k not in ignored}
         # args added after the pilot: accept when the old config lacks them and they are at default
         new_defaults = {"removal_epochs": None, "attack_seed_reps": 1,
-                        "placebo_replays": 0, "save_epoch_checkpoints": []}
+                        "trajectory_replays": 0, "save_epoch_checkpoints": [],
+                        "deletion_mode": "filter_rechunk", "deletion_weight": 1.0,
+                        "window_membership": "value_only"}
         for key, default in new_defaults.items():
             if key not in before and now.get(key) == default:
                 now.pop(key, None)
@@ -1097,6 +1200,11 @@ def main() -> None:
         baseline_attack, baseline_probabilities = evaluate_attack_condition(
             interface0["x"], interface0["membership"], interface0["classes"],
             target_queries, args.classes, seed, args, return_probabilities=True)
+        baseline_rep_probs = pop_rep_probabilities(baseline_attack)
+        np.savez_compressed(
+            out_dir / f"baseline_seed{seed}_attack_probs.npz",
+            target_membership=target_queries["membership"], target_classes=target_queries["classes"],
+            **{f"J00_class{c}": arr for c, arr in baseline_rep_probs.items()})
         gate = attack_gate(baseline_attack, args)
         baseline_records[str(seed)] = {
             "shadow_metrics": baseline_shadow_metrics,
@@ -1175,9 +1283,10 @@ def main() -> None:
             stage1_abs = np.abs(noop_x - baseline_x)
             noop_interface_x = replace_affected_vectors(
                 interface0, noop_model, X, args.affected_shadow)
-            _, noop_probabilities = evaluate_attack_condition(
+            noop_metrics, noop_probabilities = evaluate_attack_condition(
                 noop_interface_x, interface0["membership"], interface0["classes"],
                 target_queries, args.classes, seed, args, return_probabilities=True)
+            pop_rep_probabilities(noop_metrics)
             stage2_by_class = {}
             for cls in args.classes:
                 key = str(cls)
@@ -1210,16 +1319,18 @@ def main() -> None:
     json_dump(out_dir / "no_op_replays.json", noop_records)
 
     # ------------------------------------------------------------------
-    # Phase B2: placebo replays (no deletion, different trajectory RNG).
-    # The distribution of these deltas is the noise floor for patient deltas.
+    # Phase B2: trajectory-sensitivity replays (no deletion, different
+    # dropout/trajectory RNG stream).  Distribution of paired deltas under a
+    # content-free perturbation; a reference scale, not a strict null.
     # ------------------------------------------------------------------
     placebo_records: List[Mapping[str, object]] = []
     for seed in args.seeds:
         context = baseline_contexts[seed]
         interface0 = context["interface"]
         baseline_attack = subset_attack_metrics(context["attack"], loo_classes)
-        for replay in range(args.placebo_replays):
-            placebo_path = out_dir / "checkpoints" / f"shadow_{args.affected_shadow}_placebo_seed{seed}_r{replay}.pt"
+        pop_rep_probabilities(baseline_attack)
+        for replay in range(args.trajectory_replays):
+            placebo_path = out_dir / "checkpoints" / f"shadow_{args.affected_shadow}_trajreplay_seed{seed}_r{replay}.pt"
             placebo_model, placebo_metrics, _ = train_or_load_stage1(
                 placebo_path, X, y, affected_split["train_idx"], affected_split["test_idx"],
                 seed, args, trajectory_noise_seed=seed + 500000 + 1000 * (replay + 1))
@@ -1227,6 +1338,7 @@ def main() -> None:
             placebo_attack = evaluate_attack_condition(
                 placebo_x, interface0["membership"], interface0["classes"],
                 target_queries, loo_classes, seed, args)
+            pop_rep_probabilities(placebo_attack)
             record = {
                 "seed": seed, "replay": replay,
                 "stage1_delta_heldout_accuracy": float(
@@ -1240,10 +1352,14 @@ def main() -> None:
                 },
             }
             placebo_records.append(record)
-            LOGGER.info("placebo seed=%d replay=%d delta CE by class: %s", seed, replay,
+            LOGGER.info("trajectory replay seed=%d replay=%d delta CE by class: %s", seed, replay,
                         {c: round(v["cross_entropy"], 6) for c, v in record["per_class_delta"].items()})
     if placebo_records:
-        json_dump(out_dir / "placebo_replays.json", placebo_records)
+        json_dump(out_dir / "trajectory_sensitivity_replays.json", {
+            "meaning": ("paired delta under a content-free trajectory perturbation (same data, "
+                        "same init, different dropout RNG stream); reference scale for patient "
+                        "deltas, not a strict null hypothesis"),
+            "records": placebo_records})
 
     noop_passed = bool(noop_records) and all(r["passed"] for r in noop_records)
     if args.enforce_noop_gate and not noop_passed:
@@ -1287,6 +1403,7 @@ def main() -> None:
         interface0 = context["interface"]
         baseline_shadow_metrics = context["shadow_metrics"]
         baseline_attack = subset_attack_metrics(context["attack"], loo_classes)
+        pop_rep_probabilities(baseline_attack)
 
         for patient in eligible_candidates:
             pid = int(patient["patient_id"])
@@ -1322,14 +1439,25 @@ def main() -> None:
                 "J10": evaluate_attack_condition(
                     interface1_x, interface0["membership"], interface0["classes"],
                     target_queries, loo_classes, seed, args),
-                "J01": evaluate_attack_condition(
-                    interface0["x"], membership1, interface0["classes"],
-                    target_queries, loo_classes, seed, args),
-                "J11": evaluate_attack_condition(
-                    interface1_x, membership1, interface0["classes"],
-                    target_queries, loo_classes, seed, args),
             }
+            if relabel_conditions:
+                conditions["J01"] = evaluate_attack_condition(
+                    interface0["x"], membership1, interface0["classes"],
+                    target_queries, loo_classes, seed, args)
+                conditions["J11"] = evaluate_attack_condition(
+                    interface1_x, membership1, interface0["classes"],
+                    target_queries, loo_classes, seed, args)
+            else:
+                conditions["J01"] = None
+                conditions["J11"] = None
+            rep_probs = {c: pop_rep_probabilities(m) for c, m in conditions.items() if m is not None}
+            np.savez_compressed(
+                out_dir / "runs" / f"seed{seed}_patient{pid}_attack_probs.npz",
+                target_membership=target_queries["membership"], target_classes=target_queries["classes"],
+                **{f"{c}_class{cls}": arr for c, d in rep_probs.items() for cls, arr in d.items()})
             result = {
+                "membership_conditions_evaluated": ",".join(c for c, m in conditions.items() if m is not None),
+                "exposure": loo_shadow_metrics.get("exposure"),
                 "seed": seed,
                 "split_sha256": split_hash,
                 "affected_shadow": args.affected_shadow,
@@ -1362,8 +1490,11 @@ def main() -> None:
         "attack_gate": gate_summary,
         "baseline_by_seed": baseline_records,
         "no_op_replays": noop_records,
-        "placebo_replays": placebo_records,
+        "trajectory_sensitivity_replays": placebo_records,
         "removal_epochs": args.removal_epochs,
+        "deletion_mode": args.deletion_mode,
+        "deletion_weight": args.deletion_weight,
+        "membership_conditions_evaluated": "J00,J10,J01,J11" if relabel_conditions else "J00,J10",
         "attack_seed_reps": args.attack_seed_reps,
         "elapsed_seconds": time.time() - started,
         "primary_estimand": (
