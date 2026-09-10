@@ -5,3 +5,8 @@ __pycache__/
 
 # macOS metadata
 .DS_Store
+
+# Calibration data and outputs stay on Delta; Git tracks code and protocol.
+/data/
+/results/
+/logs/

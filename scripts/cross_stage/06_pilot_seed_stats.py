@@ -19,10 +19,12 @@ need an interaction term:
     relabel-first: J11 - J00 = (J01 - J00) + (J11 - J01)
                                  relabel      value | M1
 
-and the Shapley split (average of the two orderings).  (J11 - J10) is the
-"continuous-vs-full" difference the team asked about: it is the part of the
-full deletion effect that the continuous value pathway can never explain,
-evaluated at the *retrained* prediction vectors.
+and the Shapley split (average of the two orderings). J11-J10 is the relabel
+effect conditional on P1. The continuous score's target is J10-J00.
+
+This script describes Stage-1 row means (already averaged over attack seeds).
+For crossed/nested seed variance components use 09_seed_variance.py; this
+script's mean_over_se is not a crossed-design uncertainty estimate.
 
 Usage:
     python scripts/cross_stage/06_pilot_seed_stats.py \
@@ -189,8 +191,9 @@ def main() -> None:
                 "sd_between_patients": float(finite.std(ddof=1)) if len(finite) > 1 else None,
                 "mean_within_patient_seed_sd": float(np.mean(sds)) if sds else None,
                 "rms_within_patient_seed_sd": float(np.sqrt(np.mean(vars_))) if vars_ else None,
-                "seed_variance_note": ("seeds change Stage 1 AND attack seed together in the pilot: "
-                                       "combined algorithmic variance, not Stage-1-only"),
+                "seed_variance_note": ("SD across Stage-1 row means, after the configured attack-seed "
+                                       "averaging. This is not an isolated Stage-1 variance component. "
+                                       "Use 09 for crossed/nested decomposition and grand-mean SE."),
                 "patients_positive": int((finite > 0).sum()),
                 "patients_negative": int((finite < 0).sum()),
             }
@@ -223,6 +226,7 @@ def main() -> None:
             "interaction_ce": "J11 - J10 - J01 + J00",
             "shapley_*": "average of the two path orderings; value+relabel shares sum to full",
             "sign": "positive CE change = attack worse after deletion",
+            "mean_over_se": "Descriptive row-mean ratio; not a crossed-design t statistic or CI. Use 09.",
         },
         "patients": patients,
         "class_summary": class_summary,

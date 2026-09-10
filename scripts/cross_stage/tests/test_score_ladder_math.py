@@ -95,7 +95,8 @@ def test_stage1():
 
     def loss_fn(model, keep):
         l2 = sum((p ** 2).sum() for p in model.parameters())
-        return F.cross_entropy(model(Xn[keep]), yn[keep]) + 0.5 * wd * l2
+        # Fixed-mask deletion keeps the original n denominator and L2 term.
+        return F.cross_entropy(model(Xn[keep]), yn[keep], reduction="sum") / n + 0.5 * wd * l2
 
     fit_to_convergence(net, lambda: loss_fn(net, idx))
     theta0 = ladder.flatten([p.detach() for p in ladder.flat_params(net)])
@@ -110,8 +111,7 @@ def test_stage1():
         m2 = nn.Sequential(nn.Linear(d_in, 6), nn.Tanh(), nn.Linear(6, 2))
         m2.load_state_dict(net.state_dict())
         keep = np.array([k for k in idx if k != i])
-        # removal = mean over n-1 examples; Eq. 61 uses eps=-1/n (first order), so compare
-        # against the exact (n-1)-mean refit, which is what the derivation approximates.
+        # Exact fixed-denominator refit of the same perturbation as the score.
         fit_to_convergence(m2, lambda: loss_fn(m2, keep))
         theta1 = ladder.flatten([p.detach() for p in ladder.flat_params(m2)])
         actual.append(float(h @ (theta1 - theta0)))
@@ -166,6 +166,11 @@ def test_cg_curvature_gate():
     B = torch.diag(torch.tensor([2.0, 1.0, 0.5]))
     res2 = ladder.conjugate_gradient(lambda v: B @ v, torch.tensor([1.0, 1.0, 1.0]), 20, 1e-10)
     assert not res2["nonpositive_curvature"] and res2["final_rel_residual"] < 1e-8
+    assert abs(res2["final_rel_residual"] - float((B @ res2["x"] - 1).norm()/torch.ones(3).norm())) < 1e-14
+    zero = ladder.conjugate_gradient(lambda v: B @ v, torch.zeros(3), 20, 1e-10)
+    assert zero["final_rel_residual"] == 0 and not zero["nonpositive_curvature"]
+    assert ladder.cg_reliable(zero, True, 1e-3)
+    assert not ladder.cg_reliable(res2, False, 1e-3), "Lanczos gate must be consumed"
     lz = ladder.lanczos_extreme_eigs(lambda v: B @ v, 3, 3, DEV, torch.float64)
     assert abs(lz["lambda_min_est"] - 0.5) < 1e-6 and abs(lz["lambda_max_est"] - 2.0) < 1e-6
     print(f"[D] CG curvature gate OK; Lanczos eigs {lz['lambda_min_est']:.3f}/{lz['lambda_max_est']:.3f}")
@@ -220,6 +225,12 @@ def test_attack_seed_design():
     assert n42 != n43 and len(n42) == 3 and n42[0] == 4201, (n42, n43)
     assert c42 == c43 == [5101, 5102, 5103]
     assert pilot.attack_seed_design(nested).startswith("nested") and pilot.attack_seed_design(crossed).startswith("crossed")
+    for bad in ([5101, 5101], []):
+        try:
+            pilot.attack_rep_seeds(42, 1, argparse.Namespace(attack_seeds=bad))
+            raise AssertionError("duplicate/empty seed panel was accepted")
+        except ValueError:
+            pass
     print(f"[F] attack seed design: nested {n42} vs {n43}; crossed {c42} == {c43}")
 
 
@@ -259,6 +270,8 @@ def test_patient_panel_handshake(tmp_path=None):
             dict(panel_for(1, ids1)[list(panel_for(1, ids1))[0]][0])), "cross-shadow duplicate"),
         (lambda p: p.update(shortfall={"shadow_1_class_1": 2}), "shortfall"),
         (lambda p: list(p["proposed_patient_panels_disjoint_across_shadows"]["1"].values())[0][0].update(raw_indices=[0, 1, 2, 3]), "raw indices"),
+        (lambda p: list(p["proposed_patient_panels_disjoint_across_shadows"]["1"].values())[0][0].pop("raw_indices"), "missing raw indices"),
+        (lambda p: list(p["proposed_patient_panels_disjoint_across_shadows"]["1"].values())[0][0].update(n_images=999), "image count"),
     ]:
         p2 = json.loads(json.dumps(panel)); mutate(p2); tmp.write_text(json.dumps(p2))
         try:
@@ -275,6 +288,21 @@ def test_patient_panel_handshake(tmp_path=None):
     print("[G] patient panel handshake: accepts valid panel, rejects hash/duplicate/shortfall/raw-index/bounds violations")
 
 
+def test_stable_query_ce():
+    pilot = _load_pilot()
+    model = nn.Linear(2, 2, bias=False).float().to(pilot.DEVICE)
+    with torch.no_grad():
+        model.weight.copy_(torch.eye(2, device=pilot.DEVICE))
+    x = np.asarray([[30., 0.], [0., 30.]], dtype=np.float32)
+    y = np.asarray([1, 0], dtype=np.int64)
+    metric, prob, log_prob = pilot.evaluate_attack_queries(model, x, y)
+    assert abs(metric["cross_entropy"] - 30.) < 1e-6
+    legacy = pilot.binary_metrics(y, prob)["cross_entropy"]
+    assert legacy < 20.
+    assert abs(-log_prob[np.arange(2), y].mean() - metric["cross_entropy"]) < 1e-6
+    print(f"[H] stable query CE={metric['cross_entropy']:.6f}; legacy probability-clipped CE={legacy:.6f}")
+
+
 if __name__ == "__main__":
     test_attack_stage()
     test_stage1()
@@ -283,4 +311,5 @@ if __name__ == "__main__":
     test_fixed_mask_rng_alignment()
     test_attack_seed_design()
     test_patient_panel_handshake()
+    test_stable_query_ce()
     print("all checks passed")

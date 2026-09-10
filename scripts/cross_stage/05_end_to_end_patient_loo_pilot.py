@@ -109,6 +109,8 @@ def parse_args() -> argparse.Namespace:
         help=("run LOO only for classes whose baseline attack passes the "
               "per-class gate for every seed; fail if no class qualifies"))
     ap.add_argument("--noop_tolerance", type=float, default=0.0)
+    ap.add_argument("--require_all_classes", action="store_true",
+                    help="stop unless every prechosen class passes on all Stage-1 seeds")
     ap.add_argument(
         "--enforce_noop_gate", action="store_true",
         help="stop before LOO unless Stage-1 and Stage-2 no-op replays are within tolerance")
@@ -139,7 +141,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--save_epoch_checkpoints", type=int, nargs="*", default=[],
                     help="epochs (1-based, after completion) at which baseline Stage-1 weights, Adam "
                          "state and RNG states are saved")
-    ap.add_argument("--attack_seeds", type=int, nargs="*", default=None,
+    ap.add_argument("--attack_seeds", type=int, nargs="+", default=None,
                     help=("explicit attack-seed panel shared by EVERY Stage-1 seed (strict crossed "
                           "design, e.g. 5101 5102 5103).  Overrides --attack_seed_reps.  Default: "
                           "nested replicates derived from the Stage-1 seed (pilot behaviour)."))
@@ -331,7 +333,8 @@ def train_classifier_from_orders(
     post_train_rng_sha256 = rng_fp.hexdigest()[:16]
     all_train = np.asarray(train_orders[0], dtype=np.int64)
     without_patient = np.asarray([v for v in all_train if int(v) not in excluded_all], dtype=np.int64)
-    fully_removed = bool(excluded_all) and removal_window is None and deletion_weight == 1.0
+    fully_removed = bool(excluded_all) and deletion_weight == 1.0 and (
+        removal_window is None or tuple(removal_window) == (0, len(train_orders)))
     # for partial exposure the patient WAS trained on in some epochs (or at reduced weight),
     # so the honest "training set" is the full order; report both views explicitly.
     effective_train = without_patient if fully_removed else all_train
@@ -343,7 +346,7 @@ def train_classifier_from_orders(
         "removal_window": list(removal_window) if removal_window else None,
         "deletion_mode": deletion_mode,
         "deletion_weight": float(deletion_weight),
-        "fully_removed": bool(excluded_all) and removal_window is None and deletion_weight == 1.0,
+        "fully_removed": fully_removed,
     }
     metrics = {
         "train_accuracy": classification_accuracy(model, X, y, effective_train),
@@ -471,8 +474,10 @@ def load_patient_panel(panel_path: Path, args: argparse.Namespace, split_hash: s
             pidx = idx[groups[idx] == pid]
             if len(pidx) == 0:
                 problems.append(f"patient {pid} not in shadow {shadow} train split"); continue
-            if "raw_indices" in r and sorted(map(int, r["raw_indices"])) != sorted(pidx.tolist()):
+            if "raw_indices" not in r or sorted(map(int, r["raw_indices"])) != sorted(pidx.tolist()):
                 problems.append(f"patient {pid}: raw indices differ from split")
+            if int(r.get("n_images", -1)) != len(pidx):
+                problems.append(f"patient {pid}: recorded n_images differs from split")
             vals, counts = np.unique(y[pidx], return_counts=True)
             if int(vals[counts.argmax()]) != cls:
                 problems.append(f"patient {pid}: majority class != {cname}")
@@ -486,11 +491,18 @@ def load_patient_panel(panel_path: Path, args: argparse.Namespace, split_hash: s
     ids = [c["patient_id"] for c in candidates]
     if len(set(ids)) != len(ids):
         problems.append("duplicate patient ids inside the panel")
+    if args.require_complete_panel:
+        quota = panel.get("args", {}).get("patients_per_class_per_shadow")
+        for c in args.classes:
+            count = sum(r["oct_class"] == c for r in candidates)
+            if count == 0 or (quota is not None and count != int(quota)):
+                problems.append(f"class {c}: panel count {count} does not satisfy quota {quota}")
     if problems:
         raise RuntimeError("patient panel rejected: " + "; ".join(problems))
     per_class_n = {c: sum(r["oct_class"] == c for r in candidates) for c in args.classes}
     report = {"n_patients": len(candidates), "per_class": per_class_n, "shadow": shadow,
-              "shortfall_recorded_by_preflight": shortfall, "split_sha256": split_hash}
+              "shortfall_recorded_by_preflight": shortfall, "split_sha256": split_hash,
+              "panel_sha256": sha256_file(panel_path)}
     LOGGER.info("Frozen patient panel accepted: %s", report)
     return candidates, report
 
@@ -642,14 +654,28 @@ def train_attack_model_deterministic(
     return model
 
 
-def predict_attack_prob(model: torch.nn.Module, X: np.ndarray) -> np.ndarray:
-    chunks = []
+def predict_attack_outputs(model: torch.nn.Module, X: np.ndarray):
+    chunks, log_chunks = [], []
     model.eval()
     with torch.no_grad():
         for start in range(0, len(X), 512):
-            xb = torch.as_tensor(X[start:start + 512], dtype=torch.float32, device=DEVICE)
-            chunks.append(torch.softmax(model(xb), dim=1)[:, 1].cpu().numpy())
-    return np.concatenate(chunks)
+            xb = torch.as_tensor(X[start:start + 512], dtype=next(model.parameters()).dtype, device=DEVICE)
+            logits = model(xb)
+            chunks.append(torch.softmax(logits, dim=1)[:, 1].cpu().numpy())
+            log_chunks.append(torch.log_softmax(logits, dim=1).cpu().numpy())
+    return np.concatenate(chunks), np.concatenate(log_chunks)
+
+
+def predict_attack_prob(model: torch.nn.Module, X: np.ndarray) -> np.ndarray:
+    return predict_attack_outputs(model, X)[0]
+
+
+def evaluate_attack_queries(model, X: np.ndarray, y_true: np.ndarray):
+    """Stable CE of logits, matching J_Q in the implicit formula; AUC uses probabilities."""
+    prob, log_prob = predict_attack_outputs(model, X)
+    metrics = binary_metrics(y_true, prob)
+    metrics["cross_entropy"] = float(-log_prob[np.arange(len(y_true)), y_true].astype(np.float64).mean())
+    return metrics, prob, log_prob
 
 
 def binary_metrics(y_true: np.ndarray, prob: np.ndarray) -> Dict[str, float]:
@@ -659,6 +685,7 @@ def binary_metrics(y_true: np.ndarray, prob: np.ndarray) -> Dict[str, float]:
         "balanced_accuracy": float(balanced_accuracy_score(y_true, pred)),
         "auc": float(roc_auc_score(y_true, prob)),
         "cross_entropy": float(log_loss(y_true, np.column_stack([1.0 - prob, prob]), labels=[0, 1])),
+        "brier": float(np.mean((prob - y_true) ** 2)),
         "member_recall": float(recall_score(y_true, pred, zero_division=0)),
         "n_test": int(len(y_true)),
         "n_member": int((y_true == 1).sum()),
@@ -675,10 +702,14 @@ def attack_rep_seeds(stage1_seed: int, cls: int, args: argparse.Namespace) -> Li
              values differ across Stage-1 seeds).
     """
     panel = getattr(args, "attack_seeds", None)
-    if panel:
+    if panel is not None:
+        if not panel or len(set(panel)) != len(panel):
+            raise ValueError("--attack_seeds must be nonempty and unique")
         return [int(v) for v in panel]
     base = int(stage1_seed * 100 + cls)
-    reps = max(1, int(getattr(args, "attack_seed_reps", 1)))
+    reps = int(getattr(args, "attack_seed_reps", 1))
+    if reps < 1:
+        raise ValueError("--attack_seed_reps must be positive")
     return [base if r == 0 else base + 10007 * r for r in range(reps)]
 
 
@@ -699,6 +730,7 @@ def evaluate_attack_condition(
     per_class: Dict[str, object] = {}
     probabilities: Dict[str, np.ndarray] = {}
     all_rep_probs: Dict[str, List[np.ndarray]] = {}
+    all_rep_logs: Dict[str, List[np.ndarray]] = {}
     for cls in classes:
         tr = train_classes == cls
         te = target["classes"] == cls
@@ -714,12 +746,13 @@ def evaluate_attack_condition(
                 train_x[tr], train_membership[tr], rep_seed,
                 args.attack_epochs, args.attack_lr, args.attack_batch_size,
                 n_hidden=64, deterministic=args.deterministic)
-            prob = predict_attack_prob(model, target["x"][te])
+            query_metrics, prob, log_prob = evaluate_attack_queries(model, target["x"][te], target["membership"][te])
             if rep == 0:
                 probabilities[str(cls)] = prob
             all_rep_probs.setdefault(str(cls), []).append(prob)
-            rep_metrics.append(binary_metrics(target["membership"][te], prob))
-        numeric_keys = ("accuracy", "balanced_accuracy", "auc", "cross_entropy", "member_recall")
+            all_rep_logs.setdefault(str(cls), []).append(log_prob)
+            rep_metrics.append(query_metrics)
+        numeric_keys = ("accuracy", "balanced_accuracy", "auc", "cross_entropy", "member_recall", "brier")
         averaged = {k: float(np.mean([m[k] for m in rep_metrics])) for k in numeric_keys}
         averaged.update({k: rep_metrics[0][k] for k in ("n_test", "n_member", "n_nonmember")})
         per_class[str(cls)] = {
@@ -731,13 +764,16 @@ def evaluate_attack_condition(
             "attack_seed_reps": reps,
             "attack_seeds": rep_seed_list,
             "attack_seed_design": attack_seed_design(args),
+            "ce_definition": "mean_negative_log_softmax_of_logits",
             "per_rep_cross_entropy": [m["cross_entropy"] for m in rep_metrics],
             "per_rep_auc": [m["auc"] for m in rep_metrics],
+            "per_rep_brier": [m["brier"] for m in rep_metrics],
         }
-    numeric = ("accuracy", "balanced_accuracy", "auc", "cross_entropy", "member_recall")
+    numeric = ("accuracy", "balanced_accuracy", "auc", "cross_entropy", "member_recall", "brier")
     macro = {key: float(np.mean([per_class[str(c)][key] for c in classes])) for key in numeric}
     metrics = {"per_class": per_class, "macro": macro}
     metrics["_rep_probabilities"] = {k: np.stack(v) for k, v in all_rep_probs.items()}
+    metrics["_rep_log_probabilities"] = {k: np.stack(v) for k, v in all_rep_logs.items()}
     if return_probabilities:
         return metrics, probabilities
     return metrics
@@ -745,7 +781,10 @@ def evaluate_attack_condition(
 
 def pop_rep_probabilities(metrics: Dict[str, object]) -> Dict[str, np.ndarray]:
     """Remove the (non-JSON) per-rep probability arrays from a metrics dict."""
-    return metrics.pop("_rep_probabilities", {}) if isinstance(metrics, dict) else {}
+    if not isinstance(metrics, dict):
+        return {}
+    metrics.pop("_rep_log_probabilities", None)
+    return metrics.pop("_rep_probabilities", {})
 
 
 def attack_gate(metrics: Mapping[str, object], args: argparse.Namespace) -> Dict[str, object]:
@@ -999,8 +1038,7 @@ def write_flat_summary(out_dir: Path, results: Sequence[Mapping[str, object]]) -
             "delta_full_macro_cross_entropy": nz(macro_full["cross_entropy"]),
             "delta_full_macro_auc": nz(macro_full["auc"]),
             "membership_conditions_evaluated": result.get("membership_conditions_evaluated", "J00,J10,J01,J11"),
-            "primary_endpoint": ("full_J11_minus_J00" if full["cross_entropy"] is not None
-                                 else "value_J10_minus_J00"),
+            "primary_endpoint": "value_J10_minus_J00",
         })
     path = out_dir / "patient_seed_summary.csv"
     with path.open("w", newline="", encoding="utf-8") as f:
@@ -1141,9 +1179,7 @@ def aggregate_analysis(
     drift_keys = (
         "deleted_patient_mean_js", "retained_members_mean_js",
         "nonmembers_mean_js", "all_affected_mean_js")
-    primary_effect = "mean_delta_full_matched_cross_entropy"
-    if patient_rows and all(r[primary_effect] is None for r in patient_rows):
-        primary_effect = "mean_delta_value_matched_cross_entropy"  # windowed / value-only runs
+    primary_effect = "mean_delta_value_matched_cross_entropy"
     return {
         "qualification": "pilot/descriptive; matched-class CE is primary; no confirmatory p-values",
         "patient_seed_aggregation": patient_rows,
@@ -1184,6 +1220,9 @@ def main() -> None:
         raise ValueError("--classes must be unique")
     if len(set(args.seeds)) != len(args.seeds):
         raise ValueError("--seeds must be unique")
+    attack_rep_seeds(args.seeds[0], args.classes[0], args)
+    if not 0 < args.deletion_weight <= 1:
+        raise ValueError("--deletion_weight must be in (0, 1]; baseline supplies alpha=0")
     if args.noop_replays < 1 and args.enforce_noop_gate:
         raise ValueError("--enforce_noop_gate requires --noop_replays >= 1")
     if args.noop_tolerance < 0:
@@ -1194,7 +1233,6 @@ def main() -> None:
         parse_removal_window(args.removal_epochs, args.shadow_epochs) != (0, args.shadow_epochs)
     partial_exposure = partial_window or args.deletion_weight < 1.0
     relabel_conditions = not partial_exposure or args.window_membership == "relabel"
-    primary_is_full = relabel_conditions
     if partial_exposure and not relabel_conditions:
         LOGGER.warning("Partial exposure run (%s, weight=%.2f): J01/J11 are skipped; "
                        "primary endpoint is J10-J00 (value pathway).",
@@ -1204,18 +1242,18 @@ def main() -> None:
     cfg = build_config(args)
     config_path = out_dir / "experiment_config.json"
     config_payload = {
+        "schema_version": 4,
+        "ce_definition": "mean_negative_log_softmax_of_logits",
         "args": vars(args), "oct_config": asdict(cfg),
         "estimands": {
             "J00": "baseline vectors + baseline membership",
             "J10": "LOO vectors + baseline membership (value pathway)",
             "J01": "baseline vectors + LOO membership (relabel pathway)",
             "J11": "LOO vectors + LOO membership (full patient LOO)",
-            "primary": ("patient-matched OCT-class cross-entropy: J11 - J00"
-                        if primary_is_full else
-                        "patient-matched OCT-class cross-entropy: J10 - J00 (partial exposure: value only)"),
+            "primary": "patient-matched OCT-class cross-entropy: J10 - J00 (continuous value pathway)",
             "mechanistic": "patient-matched OCT-class cross-entropy: J10 - J00",
             "attack_seed_design": attack_seed_design(args),
-            "secondary": "matched-class balanced accuracy, accuracy, AUC; macro metrics",
+            "secondary": "J11-J00 full effect when defined; matched-class AUC/Brier and macro metrics",
         },
         "gate_policy": (
             "A class enters LOO only if its baseline attack passes query-count, AUC, "
@@ -1227,6 +1265,8 @@ def main() -> None:
     }
     if config_path.exists() and not args.overwrite:
         previous = json.loads(config_path.read_text(encoding="utf-8"))
+        if previous.get("ce_definition") != config_payload["ce_definition"]:
+            raise RuntimeError("Legacy CE definition in this directory; use a new v4 --output_dir")
         ignored = {"overwrite", "baseline_only"}
         before = {k: v for k, v in previous.get("args", {}).items() if k not in ignored}
         now = {k: v for k, v in vars(args).items() if k not in ignored}
@@ -1236,7 +1276,7 @@ def main() -> None:
                         "deletion_mode": "filter_rechunk", "deletion_weight": 1.0,
                         "window_membership": "value_only", "attack_seeds": None,
                         "patient_panel_json": None, "panel_shadow": None,
-                        "require_complete_panel": False}
+                        "require_complete_panel": False, "require_all_classes": False}
         for key, default in new_defaults.items():
             if key not in before and now.get(key) == default:
                 now.pop(key, None)
@@ -1260,6 +1300,10 @@ def main() -> None:
     candidates_path = out_dir / "selected_patients.json"
     if candidates_path.exists() and not args.overwrite:
         candidates = json.loads(candidates_path.read_text(encoding="utf-8"))["patients"]
+        if args.patient_panel_json:
+            checked, _ = load_patient_panel(Path(args.patient_panel_json), args, split_hash, splits, y, groups)
+            if sorted(checked, key=lambda r: r["patient_id"]) != sorted(candidates, key=lambda r: r["patient_id"]):
+                raise RuntimeError("Frozen panel differs from cached selected patients on resume")
     elif args.patient_panel_json:
         candidates, panel_report = load_patient_panel(
             Path(args.patient_panel_json), args, split_hash, splits, y, groups)
@@ -1333,11 +1377,14 @@ def main() -> None:
         baseline_attack, baseline_probabilities = evaluate_attack_condition(
             interface0["x"], interface0["membership"], interface0["classes"],
             target_queries, args.classes, seed, args, return_probabilities=True)
+        baseline_rep_logs = baseline_attack.pop("_rep_log_probabilities")
         baseline_rep_probs = pop_rep_probabilities(baseline_attack)
         np.savez_compressed(
             out_dir / f"baseline_seed{seed}_attack_probs.npz",
             target_membership=target_queries["membership"], target_classes=target_queries["classes"],
-            **{f"J00_class{c}": arr for c, arr in baseline_rep_probs.items()})
+            target_raw_index=target_queries["raw_index"], target_patient_id=groups[target_queries["raw_index"]],
+            **{f"J00_class{c}": arr for c, arr in baseline_rep_probs.items()},
+            **{f"J00_class{c}_log_probs": arr for c, arr in baseline_rep_logs.items()})
         gate = attack_gate(baseline_attack, args)
         baseline_records[str(seed)] = {
             "shadow_metrics": baseline_shadow_metrics,
@@ -1350,6 +1397,8 @@ def main() -> None:
             "interface": interface0,
             "attack": baseline_attack,
             "attack_probabilities": baseline_probabilities,
+            "attack_rep_probabilities": baseline_rep_probs,
+            "attack_rep_log_probabilities": baseline_rep_logs,
         }
         for cls in args.classes:
             class_gate = gate["per_class"][str(cls)]
@@ -1377,7 +1426,7 @@ def main() -> None:
     }
     json_dump(out_dir / "attack_gate_summary.json", gate_summary)
 
-    if args.enforce_attack_gate and not qualified_classes:
+    if (args.enforce_attack_gate and not qualified_classes) or (args.require_all_classes and skipped_classes):
         failure_summary = {
             "status": "stopped_attack_gate_no_qualified_class",
             "split_sha256": split_hash,
@@ -1386,7 +1435,7 @@ def main() -> None:
         }
         json_dump(out_dir / "experiment_summary.json", failure_summary)
         raise RuntimeError(
-            "Attack gate stopped LOO: no requested class passed on every seed. "
+            "Attack gate stopped LOO: the required class panel did not pass on every seed. "
             f"See {out_dir / 'attack_gate_summary.json'}")
 
     loo_classes = qualified_classes if args.enforce_attack_gate else list(args.classes)
@@ -1419,18 +1468,17 @@ def main() -> None:
             noop_metrics, noop_probabilities = evaluate_attack_condition(
                 noop_interface_x, interface0["membership"], interface0["classes"],
                 target_queries, args.classes, seed, args, return_probabilities=True)
-            pop_rep_probabilities(noop_metrics)
+            noop_rep_probs = pop_rep_probabilities(noop_metrics)
             stage2_by_class = {}
             for cls in args.classes:
                 key = str(cls)
-                difference = np.abs(
-                    noop_probabilities[key] - baseline_probabilities[key])
+                difference = np.abs(noop_rep_probs[key] - context["attack_rep_probabilities"][key])
                 stage2_by_class[key] = {
                     "class_name": CLASS_NAMES.get(cls, str(cls)),
                     "max_abs": float(difference.max()),
                     "mean_abs": float(difference.mean()),
-                    "exact": bool(np.array_equal(
-                        noop_probabilities[key], baseline_probabilities[key])),
+                    "attack_seeds": attack_rep_seeds(seed, cls, args),
+                    "exact": bool(np.array_equal(noop_rep_probs[key], context["attack_rep_probabilities"][key])),
                 }
             stage1_max_abs = float(stage1_abs.max())
             stage2_max_abs = float(max(
@@ -1551,6 +1599,9 @@ def main() -> None:
             loo_model, loo_shadow_metrics, _ = train_or_load_stage1(
                 loo_path, X, y, affected_split["train_idx"], affected_split["test_idx"],
                 seed, args, excluded_indices=removed)
+            if args.deletion_mode == "fixed_mask":
+                if loo_shadow_metrics.get("post_train_rng_sha256") != baseline_shadow_metrics.get("post_train_rng_sha256"):
+                    raise RuntimeError("Fixed-mask training RNG fingerprint differs from paired baseline")
             interface1_x = replace_affected_vectors(interface0, loo_model, X, args.affected_shadow)
             membership1 = membership_after_removal(
                 interface0, removed, args.affected_shadow)
@@ -1583,11 +1634,16 @@ def main() -> None:
             else:
                 conditions["J01"] = None
                 conditions["J11"] = None
+            rep_logs = {c: m.pop("_rep_log_probabilities", {}) for c, m in conditions.items() if m is not None}
+            rep_logs["J00"] = {str(c): context["attack_rep_log_probabilities"][str(c)] for c in loo_classes}
             rep_probs = {c: pop_rep_probabilities(m) for c, m in conditions.items() if m is not None}
+            rep_probs["J00"] = {str(c): context["attack_rep_probabilities"][str(c)] for c in loo_classes}
             np.savez_compressed(
                 out_dir / "runs" / f"seed{seed}_patient{pid}_attack_probs.npz",
                 target_membership=target_queries["membership"], target_classes=target_queries["classes"],
-                **{f"{c}_class{cls}": arr for c, d in rep_probs.items() for cls, arr in d.items()})
+                target_raw_index=target_queries["raw_index"], target_patient_id=groups[target_queries["raw_index"]],
+                **{f"{c}_class{cls}": arr for c, d in rep_probs.items() for cls, arr in d.items()},
+                **{f"{c}_class{cls}_log_probs": arr for c, d in rep_logs.items() for cls, arr in d.items()})
             result = {
                 "membership_conditions_evaluated": ",".join(c for c, m in conditions.items() if m is not None),
                 "exposure": loo_shadow_metrics.get("exposure"),
@@ -1628,16 +1684,11 @@ def main() -> None:
         "deletion_mode": args.deletion_mode,
         "deletion_weight": args.deletion_weight,
         "membership_conditions_evaluated": "J00,J10,J01,J11" if relabel_conditions else "J00,J10",
-        "attack_seed_reps": args.attack_seed_reps,
+        "attack_seed_reps": len(attack_rep_seeds(args.seeds[0], args.classes[0], args)),
         "elapsed_seconds": time.time() - started,
-        "primary_endpoint_column": ("primary_delta_full_matched_cross_entropy" if primary_is_full
-                                    else "delta_value_matched_cross_entropy"),
+        "primary_endpoint_column": "delta_value_matched_cross_entropy",
         "attack_seed_design": attack_seed_design(args),
-        "primary_estimand": (
-            "patient-matched OCT-class cross-entropy J11 - J00 (full patient LOO)"
-            if primary_is_full else
-            "patient-matched OCT-class cross-entropy J10 - J00 (partial exposure: value pathway only; "
-            "J01/J11 undefined because the patient has no binary membership label)"),
+        "primary_estimand": "patient-matched OCT-class cross-entropy J10 - J00 (continuous value pathway)",
         "mechanistic_estimand": (
             "patient-matched OCT-class cross-entropy J10 - J00 "
             "(continuous value pathway)"),

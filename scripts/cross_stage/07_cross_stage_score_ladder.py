@@ -36,8 +36,9 @@ and evaluates an "oracle ladder" that tells you WHERE the chain breaks:
 
 If the 05 run used ``--attack_seed_reps K``, the SAME K attack seeds are
 replayed here: one attack model, one v and one J00 per attack seed (score and
-truth matched seed by seed; h and w are linear in v so the seed-mean score is
-computed with a single CG solve from the seed-mean v).  ``J00`` reproduction is
+truth matched seed by seed). v4 saves each score with its attack seed and solves
+each right-hand side separately so seed uncertainty can be reconstructed.
+``J00`` reproduction is
 a hard assertion.  CG is gated on curvature and residual, a Lanczos estimate of
 the extreme eigenvalues of the damped Stage-1 operator is reported, and
 ``--damping_shadow_grid`` reports rank stability of the score across gamma_s.
@@ -71,6 +72,8 @@ import torch.nn.functional as F
 from torch.func import functional_call, jvp
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+from formal_analysis import analyze_ladder, clean_json
 LOGGER = logging.getLogger("score_ladder")
 
 
@@ -155,11 +158,20 @@ def attack_implicit_v(model, P_train: np.ndarray, M_train: np.ndarray,
     H = 0.5 * (H + H.T)
     eig = torch.linalg.eigvalsh(H)
     A = H + damping * torch.eye(d, device=device, dtype=dt)
-    u = torch.linalg.solve(A, q)
+    solve_success = True
+    try:
+        u = torch.linalg.solve(A, q)
+        solve_success = bool(torch.isfinite(u).all())
+    except torch.linalg.LinAlgError:
+        solve_success = False
+    if not solve_success:
+        # Internal placeholder only. All inverse-dependent outputs are gated;
+        # independent retraining layers must remain executable.
+        u = torch.zeros_like(q)
     damped_min = float(eig.min()) + damping
     damped_max = float(eig.max()) + damping
     solve_residual = float((A @ u - q).norm() / (q.norm() + 1e-30))
-    attack_reliable = bool(damped_min > 0 and solve_residual < 1e-6 and
+    attack_reliable = bool(solve_success and damped_min > 0 and solve_residual < 1e-6 and
                            (damped_max / max(damped_min, 1e-30)) < 1e8)
 
     # v_j = - d/dp_j [u . grad_phi L]   (u is a constant here: Eq. 20 differentiates
@@ -180,6 +192,7 @@ def attack_implicit_v(model, P_train: np.ndarray, M_train: np.ndarray,
         "damped_condition_number": damped_max / max(damped_min, 1e-30) if damped_min > 0 else None,
         "solve_rel_residual": solve_residual,
         "attack_solve_reliable": attack_reliable,
+        "solve_success": solve_success,
         "damping": damping,
     }
 
@@ -270,9 +283,15 @@ def conjugate_gradient(hvp, b: torch.Tensor, iters: int, tol: float) -> Dict[str
     history = []
     min_curvature = float("inf")
     nonpositive = False
+    nonfinite = not bool(torch.isfinite(b).all())
     for k in range(iters):
+        if float(r.norm()) / b_norm <= tol or nonfinite:
+            break
         Ap = hvp(p)
         pAp = float(p @ Ap)
+        if not np.isfinite(pAp):
+            nonfinite = True
+            break
         curv = pAp / (float(p @ p) + 1e-30)
         min_curvature = min(min_curvature, curv)
         if pAp <= 0:
@@ -288,9 +307,20 @@ def conjugate_gradient(hvp, b: torch.Tensor, iters: int, tol: float) -> Dict[str
             break
         p = r + (rs_new / rs) * p
         rs = rs_new
-    return {"x": x, "iters": len(history), "final_rel_residual": history[-1] if history else None,
+    # Recompute the true residual; recursive CG residuals can drift in float32.
+    true_residual = float((hvp(x) - b).norm()) / b_norm if not nonfinite else None
+    return {"x": x, "iters": len(history), "final_rel_residual": true_residual,
+            "recursive_rel_residual": history[-1] if history else (0.0 if float(b.norm()) == 0 else None),
+            "nonfinite": nonfinite,
             "min_rayleigh_quotient": min_curvature if np.isfinite(min_curvature) else None,
             "nonpositive_curvature": nonpositive}
+
+
+def cg_reliable(result, lanczos_positive, fail_tol):
+    residual = result["final_rel_residual"]
+    return bool(lanczos_positive and not result["nonpositive_curvature"]
+                and not result.get("nonfinite", False) and residual is not None
+                and np.isfinite(residual) and residual <= fail_tol)
 
 
 def lanczos_extreme_eigs(hvp, dim: int, iters: int, device, dtype, seed: int = 0) -> Dict[str, float]:
@@ -413,6 +443,10 @@ def main() -> None:
                     help="extra attack seeds per condition for Stage-2-only noise (0 = skip)")
     ap.add_argument("--skip_frozen_self", action="store_true")
     args = ap.parse_args()
+    if args.cg_iters < 1 or args.lanczos_iters < 1 or args.hvp_batch < 1:
+        raise ValueError("CG/Lanczos iterations and batch size must be positive")
+    if args.damping_attack < 0 or args.damping_shadow < 0 or any(g < 0 for g in args.damping_shadow_grid):
+        raise ValueError("Damping values must be nonnegative")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s",
                         datefmt="%H:%M:%S", stream=sys.stdout, force=True)
     t0 = time.time()
@@ -422,8 +456,15 @@ def main() -> None:
     pilot_dir = Path(args.pilot_dir).resolve()
     out_dir = Path(args.out_dir).resolve() if args.out_dir else pilot_dir / "score_ladder"
     out_dir.mkdir(parents=True, exist_ok=True)
+    score_config = out_dir / "score_config.json"
+    requested = {**vars(args), "pilot_dir": str(pilot_dir), "out_dir": str(out_dir)}
+    if score_config.exists() and json.loads(score_config.read_text()) != requested:
+        raise RuntimeError("Score output directory contains different parameters; use a new --out_dir")
+    score_config.write_text(json.dumps(requested, indent=2, allow_nan=False))
 
     cfg_payload = json.loads((pilot_dir / "experiment_config.json").read_text(encoding="utf-8"))
+    if cfg_payload.get("ce_definition") != "mean_negative_log_softmax_of_logits":
+        raise RuntimeError("07 v4 requires a new 05 truth run with stable logits CE; do not mix legacy CE results")
     pargs = argparse.Namespace(**cfg_payload["args"])
     if args.data_dir:
         pargs.data_dir = args.data_dir
@@ -444,6 +485,8 @@ def main() -> None:
     loo_classes = [int(c) for c in summary.get("qualified_classes", pargs.classes)]
     if args.classes:
         loo_classes = [c for c in loo_classes if c in set(args.classes)]
+    if not loo_classes:
+        raise RuntimeError("No requested class is available for score analysis")
     LOGGER.info("pilot=%s affected_shadow=%d seeds=%s classes=%s", pilot_dir, a, seeds, loo_classes)
 
     cfg = pilot.build_config(pargs)
@@ -466,6 +509,7 @@ def main() -> None:
     wd = 1e-5  # Stage-1 Adam weight decay used by 05
 
     rows: List[dict] = []
+    seed_rows: List[dict] = []
     diagnostics: Dict[str, object] = {}
     for seed in seeds:
         LOGGER.info("=== seed %d ===", seed)
@@ -507,39 +551,37 @@ def main() -> None:
                 vals = []
                 for rep_seed in rep_seeds:
                     m = train_attack(x_tr, m_tr, rep_seed)
-                    pr = pilot.predict_attack_prob(m, target_queries["x"][te])
-                    vals.append(pilot.binary_metrics(target_queries["membership"][te], pr)["cross_entropy"])
+                    metric, _, _ = pilot.evaluate_attack_queries(m, target_queries["x"][te], target_queries["membership"][te])
+                    vals.append(metric["cross_entropy"])
                 return vals
 
-            def ce_avg(x_tr, m_tr) -> float:
-                return float(np.mean(ce_per_rep(x_tr, m_tr)))
-
             # one attack model, one v, one J00 per attack seed (score/truth matched per seed);
-            # h and w are linear in v, so mean_k score_k == score(mean_k v_k): one CG solve.
+            # Per-seed right-hand sides preserve uncertainty and exact seed pairing.
             tr_idx = np.where(tr)[0]
             aff_cls = aff[tr]
             raw_aff = interface0["raw_index"][tr_idx[aff_cls]]
             attacks, v_reps, J00_reps, imp_reps = [], [], [], []
             for rep_seed in rep_seeds:
                 att = train_attack(interface0["x"][tr], interface0["membership"][tr], rep_seed)
-                pr = pilot.predict_attack_prob(att, target_queries["x"][te])
-                J00_reps.append(pilot.binary_metrics(target_queries["membership"][te], pr)["cross_entropy"])
+                metric, _, _ = pilot.evaluate_attack_queries(att, target_queries["x"][te], target_queries["membership"][te])
+                J00_reps.append(metric["cross_entropy"])
                 imp = attack_implicit_v(
                     att, interface0["x"][tr], interface0["membership"][tr],
                     target_queries["x"][te], target_queries["membership"][te],
                     args.damping_attack, device)
                 attacks.append(att); v_reps.append(imp["v"][aff_cls])
                 imp_reps.append({k: val for k, val in imp.items() if k not in ("v", "u")})
-            attack = attacks[0]
             J00 = float(np.mean(J00_reps))
-            v_aff = np.mean(np.stack(v_reps), axis=0)
-            h = shadow_h(base_model, X[raw_aff], v_aff, device)
-            cg = conjugate_gradient(hvp, h, args.cg_iters, args.cg_tol)
-            w = cg["x"]
+            h_reps = [shadow_h(base_model, X[raw_aff], v_k, device) for v_k in v_reps]
+            h = torch.stack(h_reps).mean(dim=0)
+            cg_reps = [conjugate_gradient(hvp, h_k, args.cg_iters, args.cg_tol) for h_k in h_reps]
+            w_reps = [c["x"] for c in cg_reps]
+            w = torch.stack(w_reps).mean(dim=0)
+            cg = cg_reps[0]
             lanczos_spd = bool(lanczos["lambda_min_est"] > 0)
             attack_ok = all(r["attack_solve_reliable"] for r in imp_reps)
-            cg_ok = lanczos_spd and (not cg["nonpositive_curvature"]) and cg["final_rel_residual"] is not None \
-                and cg["final_rel_residual"] <= args.cg_fail_tol
+            cg_ok_reps = [cg_reliable(c, lanczos_spd, args.cg_fail_tol) for c in cg_reps]
+            cg_ok = all(cg_ok_reps)
             w_grid = {}
             for g, hvp_g in hvp_grid.items():
                 cg_g = conjugate_gradient(hvp_g, h, args.cg_iters, args.cg_tol)
@@ -550,6 +592,7 @@ def main() -> None:
                 "attack_per_seed": imp_reps,
                 "h_norm": float(h.norm()),
                 "cg": {k: val for k, val in cg.items() if k != "x"},
+                "cg_per_attack_seed": [{k: val for k, val in c.items() if k != "x"} for c in cg_reps],
                 "cg_score_reliable": bool(cg_ok),
                 "attack_solve_reliable": bool(attack_ok),
                 "lanczos_spd": lanczos_spd,
@@ -574,7 +617,14 @@ def main() -> None:
                 for c in ("J00", "J10", "J01", "J11"):
                     entry = run["conditions"].get(c)
                     cond[c] = None if entry is None else entry["per_class"][str(cls)]["cross_entropy"]
-                stored_reps = run["conditions"]["J00"]["per_class"][str(cls)].get("per_rep_cross_entropy")
+                stored_entry = run["conditions"]["J00"]["per_class"][str(cls)]
+                if stored_entry.get("ce_definition") != "mean_negative_log_softmax_of_logits":
+                    raise RuntimeError("This run uses legacy clipped-probability CE; generate a new v4 truth run")
+                if stored_entry.get("attack_seeds", rep_seeds) != rep_seeds:
+                    raise RuntimeError("J00 stored attack seeds differ from the configured panel")
+                stored_reps = stored_entry.get("per_rep_cross_entropy")
+                if n_reps > 1 and (stored_reps is None or len(stored_reps) != n_reps):
+                    raise RuntimeError("K>1 requires per-attack-seed J00, not an averaged fallback")
                 if stored_reps is not None and len(stored_reps) == len(J00_reps):
                     mismatch = float(np.max(np.abs(np.asarray(stored_reps) - np.asarray(J00_reps))))
                 else:
@@ -604,8 +654,7 @@ def main() -> None:
                 gsum = G.sum(dim=0)
                 cg_p = conjugate_gradient(hvp, gsum / n_s, args.cg_iters, args.cg_tol)
                 dtheta_hat = cg_p["x"]                                           # Eq. 56 with eps=-1/n
-                cg_p_ok = lanczos_spd and (not cg_p["nonpositive_curvature"]) and cg_p["final_rel_residual"] is not None \
-                    and cg_p["final_rel_residual"] <= args.cg_fail_tol
+                cg_p_ok = cg_reliable(cg_p, lanczos_spd, args.cg_fail_tol)
                 # dose-response: the linear score of removing a fraction alpha is alpha * full score
                 dtheta_hat = alpha * dtheta_hat
                 score_remove_per_image = alpha * score_remove_per_image
@@ -614,26 +663,35 @@ def main() -> None:
                 # --- ladder predictions of Delta_value
                 L1_reps = [float((v_k * (p1 - p0)).sum()) for v_k in v_reps]
                 L1_lin = float(np.mean(L1_reps))
-                L2_lin = float(h @ dtheta_true)
-                L3_lin = None if partial_window else float(score_remove_per_image.sum())
+                L2_reps = [float(h_k @ dtheta_true) for h_k in h_reps]
+                L3_reps = [None if partial_window else float(alpha * (G @ w_k / n_s).sum()) for w_k in w_reps]
+                frozen_h_reps = [None if partial_window else float(alpha * (G @ h_k).sum()) for h_k in h_reps]
+                L2_lin = float(np.mean(L2_reps))
+                L3_lin = None if partial_window else float(np.mean(L3_reps))
                 lin_true = linearized_predictions(base_model, X[raw_aff], dtheta_true, device)
                 lin_if = linearized_predictions(base_model, X[raw_aff], dtheta_hat, device)
                 p1_hat_true, p1_hat_if = lin_true["projected"], lin_if["projected"]
 
-                def retrain_ce(p_aff_rows: np.ndarray, membership: np.ndarray) -> float:
+                def retrain_deltas(p_aff_rows: np.ndarray, membership: np.ndarray):
                     x_tr = interface0["x"][tr].copy()
                     x_tr[aff_cls] = p_aff_rows
-                    return ce_avg(x_tr, membership)
+                    return [a-b for a, b in zip(ce_per_rep(x_tr, membership), J00_reps)]
 
                 M0 = interface0["membership"][tr]
                 M1 = pilot.membership_after_removal(interface0, removed, a)[tr]
-                L2_retrain = retrain_ce(p1_hat_true, M0) - J00
-                L3_retrain = None if partial_window else retrain_ce(p1_hat_if, M0) - J00
                 relabel_ok = cond["J11"] is not None
-                L3_hybrid = (retrain_ce(p1_hat_if, M1) - J00) if (relabel_ok and not partial_window) else None
-                L2_hybrid = retrain_ce(p1_hat_true, M1) - J00 if relabel_ok else None
+                l2_train_reps = retrain_deltas(p1_hat_true, M0)
+                l3_train_reps = [None]*n_reps if partial_window else retrain_deltas(p1_hat_if, M0)
+                l2_hybrid_reps = retrain_deltas(p1_hat_true, M1) if relabel_ok else [None]*n_reps
+                l3_hybrid_reps = retrain_deltas(p1_hat_if, M1) if relabel_ok and not partial_window else [None]*n_reps
+                L2_retrain = float(np.mean(l2_train_reps))
+                L3_retrain = None if partial_window else float(np.mean(l3_train_reps))
+                L2_hybrid = float(np.mean(l2_hybrid_reps)) if relabel_ok else None
+                L3_hybrid = float(np.mean(l3_hybrid_reps)) if relabel_ok and not partial_window else None
                 row = {
                     "seed": seed, "patient_id": pid, "oct_class": cls, "class_name": pat["class_name"],
+                    "affected_shadow": a, "attack_seed_design": pilot.attack_seed_design(pargs),
+                    "attack_seeds": json.dumps(rep_seeds), "split_sha256": run["split_sha256"],
                     "n_images": len(removed), "attack_seed_reps": n_reps,
                     "J00": cond["J00"], "J10": cond["J10"], "J01": cond["J01"], "J11": cond["J11"],
                     "J00_recomputed": J00, "J00_reproduction_max_abs_diff": mismatch,
@@ -678,11 +736,49 @@ def main() -> None:
                     "cg_patient_rel_residual": cg_p["final_rel_residual"],
                     "cg_patient_min_rayleigh": cg_p["min_rayleigh_quotient"],
                 }
-                for g, (w_g, _) in w_grid.items():
+                for g, (w_g, cg_g) in w_grid.items():
                     row[f"L3_lin_value_gamma{g:g}"] = None if partial_window else float(alpha * (G @ w_g / n_s).sum())
+                    row[f"L3_lin_value_gamma{g:g}_reliable"] = bool(attack_ok and cg_reliable(
+                        cg_g, lanczos["lambda_min_est"] + g - args.damping_shadow > 0, args.cg_fail_tol))
+                self_reps = [None] * n_reps
                 if not args.skip_frozen_self:
-                    row["frozen_self"] = None if partial_window else float(alpha * np.mean([
-                        frozen_self_scores(base_model, att_k, X, y, removed, device).sum() for att_k in attacks]))
+                    self_reps = [None if partial_window else float(alpha *
+                        frozen_self_scores(base_model, att_k, X, y, removed, device).sum()) for att_k in attacks]
+                    row["frozen_self"] = None if partial_window else float(np.mean(self_reps))
+                per_seed_predictions = {
+                    "L1_lin_value": L1_reps, "L2_lin_value": L2_reps, "L3_lin_value": L3_reps,
+                    "L2_retrain_value": l2_train_reps, "L3_retrain_value": l3_train_reps,
+                    "L2_hybrid_full": l2_hybrid_reps, "L3_hybrid_full": l3_hybrid_reps,
+                    "frozen_h": frozen_h_reps, "frozen_self": self_reps}
+                for k, imp_k in enumerate(imp_reps):
+                    if not imp_k["solve_success"]:
+                        for key in ("L1_lin_value", "L2_lin_value", "L3_lin_value", "frozen_h"):
+                            per_seed_predictions[key][k] = None
+                            row[key] = None
+                        row["score_remove_patient"] = None
+                for k, rep_seed in enumerate(rep_seeds):
+                    one = {key: row[key] for key in ("seed", "patient_id", "oct_class", "affected_shadow",
+                                                    "split_sha256", "attack_seed_design", "deletion_weight_alpha", "removal_epochs")}
+                    one.update(attack_seed=rep_seed, cg_score_reliable=cg_ok_reps[k],
+                               cg_dtheta_reliable=bool(cg_p_ok),
+                               attack_solve_reliable=bool(imp_reps[k]["attack_solve_reliable"]))
+                    one["attack_solve_success"] = bool(imp_reps[k]["solve_success"])
+                    one.update({key: values[k] for key, values in per_seed_predictions.items()})
+                    jc = {}
+                    for c in ("J00", "J10", "J01", "J11"):
+                        entry = run["conditions"].get(c)
+                        if entry is None:
+                            jc[c] = None
+                        else:
+                            entry = entry["per_class"][str(cls)]
+                            if entry.get("attack_seeds", rep_seeds) != rep_seeds:
+                                raise RuntimeError(f"Unpaired attack seeds in {c}")
+                            jc[c] = entry.get("per_rep_cross_entropy", [entry["cross_entropy"]])[k]
+                    one.update(jc)
+                    one.update(actual_value=jc["J10"]-jc["J00"],
+                               actual_full=None if jc["J11"] is None else jc["J11"]-jc["J00"],
+                               actual_relabel=None if jc["J01"] is None else jc["J01"]-jc["J00"])
+                    seed_rows.append(one)
 
                 if args.attack_seed_reps > 0:
                     dv, df = [], []
@@ -692,8 +788,8 @@ def main() -> None:
 
                         def ce(xx, mm):
                             m = train_attack(xx, mm, s_k)
-                            pr = pilot.predict_attack_prob(m, target_queries["x"][te])
-                            return pilot.binary_metrics(target_queries["membership"][te], pr)["cross_entropy"]
+                            metric, _, _ = pilot.evaluate_attack_queries(m, target_queries["x"][te], target_queries["membership"][te])
+                            return metric["cross_entropy"]
                         j00 = ce(interface0["x"][tr], M0)
                         dv.append(ce(x_full, M0) - j00)
                         if relabel_ok:
@@ -713,13 +809,14 @@ def main() -> None:
                             "n/a" if L3_hybrid is None else f"{L3_hybrid:+.5f}",
                             row["dtheta_cosine"], (row["cg_score_reliable"], row["cg_dtheta_reliable"]))
                 write_rows(out_dir / "ladder_rows.csv", rows)
+                write_rows(out_dir / "ladder_attack_seed_rows.csv", seed_rows)
 
     write_rows(out_dir / "ladder_rows.csv", rows)
-    analysis = analyze(rows)
-    (out_dir / "ladder_summary.json").write_text(json.dumps({
+    analysis = analyze_ladder(rows, expected_seeds=seeds)
+    (out_dir / "ladder_summary.json").write_text(json.dumps(clean_json({
         "pilot_dir": str(pilot_dir), "args": vars(args), "elapsed_seconds": time.time() - t0,
         "diagnostics": diagnostics, "analysis": analysis,
-    }, indent=2), encoding="utf-8")
+    }), indent=2, allow_nan=False), encoding="utf-8")
     print(json.dumps(analysis, indent=2))
     LOGGER.info("done in %.1fs -> %s", time.time() - t0, out_dir)
 
@@ -734,92 +831,8 @@ def write_rows(path: Path, rows: List[dict]) -> None:
 
 
 def analyze(rows: List[dict]) -> Dict[str, object]:
-    """Descriptive correlations.  Rows whose CG solves were flagged unreliable are
-    excluded from the score-based pairs (they stay in the CSV)."""
-    from scipy.stats import pearsonr, spearmanr
-    if len(rows) < 3:
-        return {"n": len(rows)}
-    pairs = {
-        "value": [("L1_lin_value", "actual_value"), ("L2_lin_value", "actual_value"),
-                  ("L2_retrain_value", "actual_value"), ("L3_lin_value", "actual_value"),
-                  ("L3_retrain_value", "actual_value"), ("frozen_h", "actual_value"),
-                  ("frozen_self", "actual_value")],
-        "full": [("L2_hybrid_full", "actual_full"), ("L3_hybrid_full", "actual_full"),
-                 ("L3_lin_value", "actual_full"), ("frozen_h", "actual_full"),
-                 ("frozen_self", "actual_full")],
-    }
-    needs_score_cg = {"L3_lin_value"}
-    needs_dtheta_cg = {"L3_retrain_value", "L3_hybrid_full"}
-
-    def corr(xs, ys):
-        pairs_ = [(x, y_) for x, y_ in zip(xs, ys) if x is not None and y_ is not None
-                  and np.isfinite(x) and np.isfinite(y_)]
-        if len(pairs_) < 3:
-            return {"n": int(len(pairs_))}
-        xs, ys = np.asarray([p[0] for p in pairs_], float), np.asarray([p[1] for p in pairs_], float)
-        if xs.std() == 0 or ys.std() == 0:
-            return {"n": int(len(xs))}
-        slope, intercept = np.polyfit(xs, ys, 1)
-        return {"n": int(len(xs)), "spearman": float(spearmanr(xs, ys)[0]),
-                "pearson": float(pearsonr(xs, ys)[0]),
-                "sign_agreement": float(np.mean(np.sign(xs) == np.sign(ys))),
-                "mae": float(np.mean(np.abs(xs - ys))),
-                "slope_actual_on_pred": float(slope), "intercept": float(intercept),
-                "pred_mean": float(xs.mean()), "actual_mean": float(ys.mean()),
-                "pred_sd": float(xs.std(ddof=1)), "actual_sd": float(ys.std(ddof=1))}
-
-    def mean_or_none(vals):
-        vals = [v for v in vals if v is not None and np.isfinite(v)]
-        return float(np.mean(vals)) if vals else None
-
-    out = {"per_patient_seed": {}, "per_patient_mean": {}, "note": (
-        "descriptive only; pilot n is tiny. L3_lin needs cg_score_reliable (Lanczos SPD + no "
-        "negative curvature + residual); L3_retrain/hybrid need cg_dtheta_reliable; all pairs need "
-        "attack_solve_reliable. Use patient-level bootstrap for CIs in the formal run.")}
-    by_pid: Dict[int, List[dict]] = {}
-    for r in rows:
-        by_pid.setdefault(int(r["patient_id"]), []).append(r)
-    for level, plist in pairs.items():
-        for pk, ak in plist:
-            if pk not in rows[0]:
-                continue
-            use = [r for r in rows
-                   if (pk not in needs_score_cg or r.get("cg_score_reliable", True))
-                   and (pk not in needs_dtheta_cg or r.get("cg_dtheta_reliable", True))
-                   and r.get("attack_solve_reliable", True)]
-            out["per_patient_seed"][f"{pk}~{ak}"] = corr([r[pk] for r in use], [r[ak] for r in use])
-            by_pid_use: Dict[int, List[dict]] = {}
-            for r in use:
-                by_pid_use.setdefault(int(r["patient_id"]), []).append(r)
-            out["per_patient_mean"][f"{pk}~{ak}"] = corr(
-                [mean_or_none([r[pk] for r in rs]) for rs in by_pid_use.values()],
-                [mean_or_none([r[ak] for r in rs]) for rs in by_pid_use.values()])
-    # damping-grid rank stability of the Stage-1 implicit score
-    grid_keys = sorted(k for k in rows[0] if k.startswith("L3_lin_value_gamma"))
-    if grid_keys:
-        rows_g = [r for r in rows if r["L3_lin_value"] is not None]
-        if len(rows_g) >= 3:
-            base = [r["L3_lin_value"] for r in rows_g]
-            out["damping_sensitivity"] = {
-                k: {"spearman_vs_primary": float(spearmanr(base, [r[k] for r in rows_g])[0]),
-                    "mean_abs_ratio_vs_primary": float(np.mean([abs(r[k]) for r in rows_g]) /
-                                                       (np.mean([abs(b) for b in base]) + 1e-30))}
-                for k in grid_keys
-            }
-    if "attackseed_value_sd" in rows[0]:
-        out["stage2_only_noise"] = {
-            "mean_sd_value": mean_or_none([r["attackseed_value_sd"] for r in rows]),
-            "mean_sd_full": mean_or_none([r.get("attackseed_full_sd") for r in rows]),
-            "note": "SD across independent attack seeds with Stage 1 frozen; compare with "
-                    "between-Stage-1-seed SD from 06 to split sigma_A^2 and sigma_S^2",
-        }
-    out["dtheta_cosine_mean"] = float(np.mean([r["dtheta_cosine"] for r in rows]))
-    out["n_rows"] = len(rows)
-    out["n_rows_cg_score_reliable"] = int(sum(bool(r.get("cg_score_reliable", True)) for r in rows))
-    out["n_rows_cg_dtheta_reliable"] = int(sum(bool(r.get("cg_dtheta_reliable", True)) for r in rows))
-    out["n_rows_attack_solve_reliable"] = int(sum(bool(r.get("attack_solve_reliable", True)) for r in rows))
-    out["l3_estimand"] = rows[0].get("l3_estimand")
-    return out
+    """Compatibility entry point; use dependency-specific numeric gates."""
+    return analyze_ladder(rows)
 
 
 if __name__ == "__main__":
