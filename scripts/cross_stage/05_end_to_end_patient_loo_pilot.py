@@ -72,6 +72,7 @@ from split import split_data as indexed_split_data  # noqa: E402
 LOGGER = logging.getLogger("cross_stage_patient_loo")
 CLASS_NAMES = {0: "CNV", 1: "DME", 2: "DRUSEN", 3: "NORMAL"}
 CONDITIONS = ("J00", "J10", "J01", "J11")
+TRAINING_NUMERICS = "v4.1_pool_bins_ce_sum"
 
 
 def parse_args() -> argparse.Namespace:
@@ -176,13 +177,12 @@ def seed_everything(seed: int, deterministic: bool = True) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+    # Unsupported nondeterministic kernels must fail before they contaminate
+    # paired trajectories. SmallCNN uses deterministic average-pooling bins.
+    torch.use_deterministic_algorithms(deterministic, warn_only=False)
+    torch.backends.cudnn.deterministic = deterministic
     if deterministic:
-        # PyTorch 2.8 has no deterministic CUDA implementation for
-        # adaptive_avg_pool2d_backward.  Keep all other deterministic checks
-        # active and measure the residual floor with a full no-op replay.
-        torch.use_deterministic_algorithms(True, warn_only=True)
         torch.backends.cudnn.benchmark = False
-        torch.backends.cudnn.deterministic = True
 
 
 def json_dump(path: Path, value: object) -> None:
@@ -265,7 +265,6 @@ def train_classifier_from_orders(
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(int(trajectory_noise_seed))
     optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
-    criterion = nn.CrossEntropyLoss()
     excluded_all = set(int(v) for v in excluded_indices)
     if deletion_mode not in ("filter_rechunk", "fixed_mask"):
         raise ValueError(f"unknown deletion_mode {deletion_mode}")
@@ -296,18 +295,16 @@ def train_classifier_from_orders(
             xb = torch.as_tensor(X[batch_idx], dtype=torch.float32, device=DEVICE)
             yb = torch.as_tensor(y[batch_idx], dtype=torch.long, device=DEVICE)
             optimizer.zero_grad(set_to_none=True)
-            if deletion_mode == "fixed_mask":
-                # identical forward pass (and dropout draws) to the baseline;
-                # only the per-example loss weights differ.
-                per_example = nn.functional.cross_entropy(model(xb), yb, reduction="none")
-                weights = torch.ones_like(per_example)
-                if excluded:
-                    idx_t = torch.as_tensor(batch_idx, dtype=torch.int64, device=DEVICE)
-                    removed = torch.isin(idx_t, excluded_tensor)
-                    weights = torch.where(removed, weights * (1.0 - deletion_weight), weights)
-                loss = (weights * per_example).sum() / per_example.numel()
-            else:
-                loss = criterion(model(xb), yb)
+            # Share the exact reduction kernels across both modes, including
+            # the no-deletion baseline. CE(mean) and CE(none).sum()/n need not
+            # round identically on CUDA even though their formulas agree.
+            per_example = nn.functional.cross_entropy(model(xb), yb, reduction="none")
+            weights = torch.ones_like(per_example)
+            if deletion_mode == "fixed_mask" and excluded:
+                idx_t = torch.as_tensor(batch_idx, dtype=torch.int64, device=DEVICE)
+                removed = torch.isin(idx_t, excluded_tensor)
+                weights = torch.where(removed, weights * (1.0 - deletion_weight), weights)
+            loss = (weights * per_example).sum() / per_example.numel()
             loss.backward()
             optimizer.step()
         if epoch_checkpoint_dir is not None and (epoch + 1) in set(int(e) for e in epoch_checkpoints):
@@ -374,12 +371,22 @@ def classification_accuracy(model, X, y, indices: Sequence[int]) -> float:
 
 def save_model(path: Path, model: torch.nn.Module, metadata: Mapping[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save({"state_dict": model.state_dict(), "metadata": dict(metadata)}, path)
+    metadata = {**metadata, "training_numerics": TRAINING_NUMERICS}
+    torch.save({"state_dict": model.state_dict(), "metadata": metadata}, path)
+
+
+def require_training_numerics(metadata: Mapping[str, object], source: object) -> None:
+    if metadata.get("training_numerics") != TRAINING_NUMERICS:
+        raise RuntimeError(
+            f"Incompatible training numerics in {source}; v4.1 changes CUDA pooling "
+            "and loss reduction. Use a new --root/--output_dir and regenerate "
+            "baseline/truth; do not reuse v4 checkpoints.")
 
 
 def load_model(path: Path, n_in: int, n_hidden: int, n_classes: int) -> torch.nn.Module:
     model = build_model("cnn", n_in, n_hidden, n_classes)
     payload = torch.load(path, map_location=DEVICE, weights_only=False)
+    require_training_numerics(payload.get("metadata", {}), path)
     model.load_state_dict(payload["state_dict"])
     model.eval()
     return model
@@ -1242,7 +1249,9 @@ def main() -> None:
     cfg = build_config(args)
     config_path = out_dir / "experiment_config.json"
     config_payload = {
-        "schema_version": 4,
+        "schema_version": 5,
+        "training_numerics": TRAINING_NUMERICS,
+        "deterministic_policy": "strict" if args.deterministic else "disabled",
         "ce_definition": "mean_negative_log_softmax_of_logits",
         "args": vars(args), "oct_config": asdict(cfg),
         "estimands": {
@@ -1265,6 +1274,7 @@ def main() -> None:
     }
     if config_path.exists() and not args.overwrite:
         previous = json.loads(config_path.read_text(encoding="utf-8"))
+        require_training_numerics(previous, config_path)
         if previous.get("ce_definition") != config_payload["ce_definition"]:
             raise RuntimeError("Legacy CE definition in this directory; use a new v4 --output_dir")
         ignored = {"overwrite", "baseline_only"}
@@ -1285,6 +1295,9 @@ def main() -> None:
                 f"Output directory already contains a different configuration: {config_path}. "
                 "Use a new --output_dir, or use --overwrite only when intentional.")
     json_dump(config_path, config_payload)
+    # Resume can load every Stage-1 model without calling a training function.
+    # Configure CUDA before those cached models produce any query vectors too.
+    seed_everything(args.target_seed, args.deterministic)
 
     LOGGER.info("Loading a fresh patient-complete OCT subset")
     X, y, groups = load_dataset(cfg)

@@ -22,7 +22,7 @@ REPO = HERE.parents[1]
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--phase", choices=["tests", "smoke", "preflight", "baseline", "truth", "score", "stats"], required=True)
-    ap.add_argument("--root", default="results/cross_stage_calibration_v4")
+    ap.add_argument("--root", default="results/cross_stage_calibration_v4_1")
     ap.add_argument("--data_dir", default="./data")
     ap.add_argument("--condition", choices=["full", "dose01", "dose025", "dose05", "early", "late"], default="full")
     ap.add_argument("--stage1_seeds", type=int, nargs="+", default=[42, 43, 44, 45, 46])
@@ -46,8 +46,16 @@ def main():
     ap.add_argument("--cg_iters", type=int, default=100)
     ap.add_argument("--hvp_batch", type=int, default=64)
     ap.add_argument("--lanczos_iters", type=int, default=30)
+    ap.add_argument("--require_cuda", action="store_true",
+                    help="fail if CUDA is unavailable; the Delta GPU launcher sets this")
     ap.add_argument("--dry_run", action="store_true")
     args = ap.parse_args()
+    if args.require_cuda and not args.dry_run:
+        import torch
+        if not torch.cuda.is_available():
+            raise RuntimeError("Delta GPU job has no usable CUDA device; check the loaded PyTorch module")
+        print(f"CUDA required: torch={torch.__version__}, CUDA={torch.version.cuda}, "
+              f"GPU={torch.cuda.get_device_name(0)}", flush=True)
     root = Path(args.root).resolve(); data = Path(args.data_dir).resolve()
     commands = []
 
@@ -60,6 +68,7 @@ def main():
 
     if args.phase == "tests":
         run("tests/test_score_ladder_math.py")
+        run("tests/test_cuda_reproducibility.py")
         run("tests/test_formal_analysis.py")
         return
     if args.phase == "smoke":
@@ -81,6 +90,7 @@ def main():
                     "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
                     "numpy": numpy.__version__, "scipy": scipy.__version__, "sklearn": sklearn.__version__,
                     "job_id": os.environ.get("SLURM_JOB_ID"), "args": vars(args),
+                    "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG"),
                     "git_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip(),
                     "git_dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=REPO, text=True).strip())}
         log_dir = root/"invocations"; log_dir.mkdir(exist_ok=True)

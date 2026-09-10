@@ -13,8 +13,11 @@ to convergence, for a small MLP with an L2 term (so the Hessian is PD).
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 from pathlib import Path
+
+os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 
 import numpy as np
 import torch
@@ -194,8 +197,15 @@ def test_fixed_mask_rng_alignment():
         return ladder.flatten([p.detach() for p in m.parameters()]).clone(), met["post_train_rng_sha256"]
 
     base, rng_base = run("fixed_mask", [])
+    base_repeat, rng_repeat = run("fixed_mask", [])
+    assert torch.equal(base, base_repeat), (
+        f"same-mode replay differs on {pilot.DEVICE}: max_abs="
+        f"{float((base-base_repeat).abs().max()):.3e}")
+    assert rng_base == rng_repeat
     base_f, _ = run("filter_rechunk", [])
-    assert torch.equal(base, base_f), "no-deletion path must be identical in both modes"
+    assert torch.equal(base, base_f), (
+        f"no-deletion modes differ on {pilot.DEVICE}: max_abs="
+        f"{float((base-base_f).abs().max()):.3e}")
     loo, rng_loo = run("fixed_mask", [3, 17])
     assert rng_base == rng_loo, "fixed_mask must leave the RNG stream aligned with baseline"
     X2 = X.copy(); X2[[3, 17]] = rng.normal(size=(2, 1, 16, 16)).astype(np.float32)
@@ -203,7 +213,8 @@ def test_fixed_mask_rng_alignment():
     assert torch.equal(loo, loo2), "fixed_mask result must not depend on the removed rows' content"
     assert not torch.equal(loo, base), "deletion must change the model"
     _, rng_filter = run("filter_rechunk", [3, 17])
-    print(f"[E] fixed_mask: RNG aligned, content-independent; filter_rechunk RNG aligned with baseline: "
+    print(f"[E] device={pilot.DEVICE}; exact replay, exact no-deletion modes; "
+          f"fixed_mask: RNG aligned, content-independent; filter_rechunk RNG aligned with baseline: "
           f"{rng_base == rng_filter}")
 
 

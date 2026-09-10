@@ -454,6 +454,8 @@ def main() -> None:
     pilot = import_pilot_module()
     device = pilot.DEVICE
     pilot_dir = Path(args.pilot_dir).resolve()
+    cfg_payload = json.loads((pilot_dir / "experiment_config.json").read_text(encoding="utf-8"))
+    pilot.require_training_numerics(cfg_payload, pilot_dir / "experiment_config.json")
     out_dir = Path(args.out_dir).resolve() if args.out_dir else pilot_dir / "score_ladder"
     out_dir.mkdir(parents=True, exist_ok=True)
     score_config = out_dir / "score_config.json"
@@ -462,10 +464,10 @@ def main() -> None:
         raise RuntimeError("Score output directory contains different parameters; use a new --out_dir")
     score_config.write_text(json.dumps(requested, indent=2, allow_nan=False))
 
-    cfg_payload = json.loads((pilot_dir / "experiment_config.json").read_text(encoding="utf-8"))
     if cfg_payload.get("ce_definition") != "mean_negative_log_softmax_of_logits":
         raise RuntimeError("07 v4 requires a new 05 truth run with stable logits CE; do not mix legacy CE results")
     pargs = argparse.Namespace(**cfg_payload["args"])
+    pilot.seed_everything(pargs.target_seed, pargs.deterministic)
     if args.data_dir:
         pargs.data_dir = args.data_dir
     pargs.overwrite = False

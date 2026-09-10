@@ -1,8 +1,10 @@
-# OCT 跨阶段实验 v4：上传与启动
+# OCT 跨阶段实验 v4.1：上传与启动
 
-更新：2026-09-10。基于交付的 v3 分支 `e87f42d`，新分支为 `cross-stage-calibration-v4`。
+更新：2026-09-10（v4.1 GPU 复现修复）。基于交付的 v3 分支 `e87f42d`，新分支为 `cross-stage-calibration-v4`。
 
 先跑小面板的真实 OCT 校准，再决定正式实验规模。默认是 **DME 4 人 + DRUSEN 4 人、1 个受影响 shadow、5 个 Stage 1 seed × 5 个共用 attack seed**。所有训练保持 50 epochs。这里的 5×5 是每位病人的配对设计，不是 25 位独立病人。
+
+已安装 v4 的用户先看 [UPDATE_DELTA_GPU_V4_1_CN.md](UPDATE_DELTA_GPU_V4_1_CN.md)。本文件的旧 v4 zip/bundle 只安装基础版本，新安装也需要先应用 v4.1 更新再执行第 4 节。后续启动步骤适用于更新后的代码；默认结果目录已改为 `results/cross_stage_calibration_v4_1`，旧结果保留。
 
 ## 1. 这个包是什么
 
@@ -78,7 +80,16 @@ tail -n 60 logs/oct_cal_v4-JOB_ID.err
 sacct -j JOB_ID --format=JobID,State,ExitCode,Elapsed,MaxRSS
 ```
 
-应看到数学测试 `all checks passed`、分析测试 `OK`，以及 Slurm `COMPLETED` / `0:0`。Python unittest 的正常结果也会写到 `.err`，因此不能仅凭 `.err` 非空判断失败。
+应看到数学测试 `all checks passed`、复现测试和分析测试均为 `OK`，复现测试日志包含 `training_device=cuda` 与 `128x128 exact training replay passed on cuda`，以及 Slurm `COMPLETED` / `0:0`。Python unittest 的正常结果也会写到 `.err`，因此不能仅凭 `.err` 非空判断失败。
+
+随后做一次短合成链检查（不读取 OCT）：
+
+```bash
+sbatch --account=bgjy-delta-gpu --time=00:30:00 \
+  scripts/cross_stage/10_calibration.slurm smoke
+```
+
+确认 `SYNTHETIC CHAIN PASSED` 后继续。
 
 ### 第二步：08 eligibility preflight，冻结病人面板
 
@@ -90,7 +101,7 @@ sbatch --account=bgjy-delta-gpu --time=00:30:00 \
 完成后查看：
 
 ```bash
-cat results/cross_stage_calibration_v4/panel/eligibility_preflight.json
+cat results/cross_stage_calibration_v4_1/panel/eligibility_preflight.json
 ```
 
 确认 `panel_complete: true`、`shortfall: {}`，并记下 `proposed_affected_shadows`。脚本根据合格人数选择 shadow，后续自动消费同一个面板，不用手动猜 shadow 编号。面板只根据 split、病人图像数和固定 selection seed 选择，不读取 score 或删除效果。
@@ -109,8 +120,8 @@ sbatch --account=bgjy-delta-gpu \
 目录名由实际受影响 shadow 决定，例如 `shadow1_full`。下面用通配符查看检查结果：
 
 ```bash
-cat results/cross_stage_calibration_v4/shadow*_full/attack_gate_summary.json
-cat results/cross_stage_calibration_v4/shadow*_full/no_op_replays.json
+cat results/cross_stage_calibration_v4_1/shadow*_full/attack_gate_summary.json
+cat results/cross_stage_calibration_v4_1/shadow*_full/no_op_replays.json
 ```
 
 默认要求两类在每个 Stage 1 seed 上都通过：每个 membership label 至少 50 个 target queries，基于 K 次 attack 指标均值的 AUC ≥ 0.55、balanced accuracy ≥ 0.53；no-op 的 Stage 1 向量和全部 K 个 attack 的概率必须复现。失败会停下，不能通过删除失败类别来缩小原先指定的校准面板。

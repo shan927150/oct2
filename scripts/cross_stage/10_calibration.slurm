@@ -18,7 +18,8 @@ test -f src/config.py
 module reset
 module load pytorch-conda/2.8
 export PYTHONUNBUFFERED=1
+export CUBLAS_WORKSPACE_CONFIG=:4096:8
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-8}"
 export MKL_NUM_THREADS="$OMP_NUM_THREADS"
 export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
-srun --unbuffered python scripts/cross_stage/10_run_calibration.py --phase "${1:-preflight}" "${@:2}"
+srun --unbuffered python scripts/cross_stage/10_run_calibration.py --require_cuda --phase "${1:-preflight}" "${@:2}"

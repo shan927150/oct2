@@ -51,6 +51,40 @@ class NNModel(nn.Module):
         return self.net(x)
 
 
+class DeterministicAdaptiveAvgPool2d(nn.Module):
+    """Adaptive average bins without CUDA adaptive_avg_pool2d_backward atomics.
+
+    Divisible downsampling uses nonoverlapping AvgPool2d (the OCT 128x128
+    path). Other sizes use the same floor/ceil bins as AdaptiveAvgPool2d,
+    expressed as slice/mean/stack operations. Both paths support double
+    backward and forward-mode AD. This layer has no state_dict entries.
+    """
+    def __init__(self, output_size):
+        super().__init__()
+        self.output_size = ((output_size, output_size) if isinstance(output_size, int)
+                            else tuple(output_size))
+        if len(self.output_size) != 2 or any(v < 1 for v in self.output_size):
+            raise ValueError("output_size must contain two positive dimensions")
+
+    def forward(self, x):
+        height, width = x.shape[-2:]
+        out_h, out_w = self.output_size
+        if height % out_h == 0 and width % out_w == 0:
+            kernel = (height // out_h, width // out_w)
+            return nn.functional.avg_pool2d(x, kernel_size=kernel, stride=kernel)
+        rows = []
+        for i in range(out_h):
+            start_h = i * height // out_h
+            end_h = ((i + 1) * height + out_h - 1) // out_h
+            cells = []
+            for j in range(out_w):
+                start_w = j * width // out_w
+                end_w = ((j + 1) * width + out_w - 1) // out_w
+                cells.append(x[..., start_h:end_h, start_w:end_w].mean(dim=(-2, -1)))
+            rows.append(torch.stack(cells, dim=-1))
+        return torch.stack(rows, dim=-2)
+
+
 class SmallCNN(nn.Module):
     """通用小型 CNN，AdaptiveAvgPool2d 支持任意分辨率 (CIFAR / OCT) [ours]。"""
     def __init__(self, in_channels, n_hidden, n_out):
@@ -61,7 +95,7 @@ class SmallCNN(nn.Module):
             nn.Conv2d(64, 128, 3, padding=1), nn.ReLU(inplace=True), nn.MaxPool2d(2),
             nn.Conv2d(128, 128, 3, padding=1), nn.ReLU(inplace=True), nn.MaxPool2d(2),
         )
-        self.pool = nn.AdaptiveAvgPool2d((4, 4))
+        self.pool = DeterministicAdaptiveAvgPool2d((4, 4))
         self.classifier = nn.Sequential(
             nn.Flatten(), nn.Linear(128 * 4 * 4, n_hidden), nn.ReLU(inplace=True),
             nn.Dropout(0.2), nn.Linear(n_hidden, n_out),
