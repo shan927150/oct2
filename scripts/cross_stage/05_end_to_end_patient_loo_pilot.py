@@ -1291,7 +1291,8 @@ def main() -> None:
                         "deletion_mode": "filter_rechunk", "deletion_weight": 1.0,
                         "window_membership": "value_only", "attack_seeds": None,
                         "patient_panel_json": None, "panel_shadow": None,
-                        "require_complete_panel": False, "require_all_classes": False}
+                        "require_complete_panel": False, "require_all_classes": False,
+                        "loo_patients": None}
         for key, default in new_defaults.items():
             if key not in before and now.get(key) == default:
                 now.pop(key, None)

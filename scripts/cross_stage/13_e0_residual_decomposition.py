@@ -30,6 +30,7 @@ directory that must not overlap either truth directory.
 """
 from __future__ import annotations
 import argparse
+import hashlib
 import logging
 import math
 import os
@@ -149,7 +150,7 @@ def mc_mean_gradient(model, X, y, indices, batch, wd, reps, seed):
             total = g.clone() if total is None else total + g
             sq += float(torch.dot(g, g))
     mean = total / reps
-    spread = math.sqrt(max(0.0, sq / reps - float(torch.dot(mean, mean))))
+    spread = math.sqrt(max(0.0, sq - reps * float(torch.dot(mean, mean))) / (reps-1)) if reps > 1 else 0.0
     return mean, spread, spread / math.sqrt(reps) if reps > 1 else None
 
 
@@ -185,6 +186,7 @@ def run_seed(args, context, legacy, score, pilot, seed, core_patients, monitor_p
     if not core.exact_tree(base_payload["state_dict"], other["state_dict"]):
         raise RuntimeError("full and dose baseline parameters differ")
     rng = base_payload["metadata"]["metrics"]["post_train_rng_sha256"]
+    legacy.assert_equal(other["metadata"]["metrics"]["post_train_rng_sha256"], rng, "Baseline RNG mismatch")
     theta0 = core.flat(model0).clone()
 
     t0 = time.time()
@@ -211,7 +213,7 @@ def run_seed(args, context, legacy, score, pilot, seed, core_patients, monitor_p
             continue
         idx = list(map(int, patient["raw_indices"]))
         G = patient_gradients(score, model0, X, y, idx, device)
-        gsum = d64(G.sum(0))
+        gsum = d64(G).sum(0)
         per_norm = torch.linalg.vector_norm(d64(G), dim=1)
         b_eval = gsum / N
         row = {"seed": seed, "patient_id": pid, "oct_class": int(patient["oct_class"]), "n_images": len(idx),
@@ -238,7 +240,7 @@ def run_seed(args, context, legacy, score, pilot, seed, core_patients, monitor_p
         if pid not in core_patients:
             continue
         idx = list(map(int, patient["raw_indices"]))
-        b0 = d64(patient_gradients(score, model0, X, y, idx, device).sum(0)) / N
+        b0 = d64(patient_gradients(score, model0, X, y, idx, device)).sum(0) / N
         for condition, root, alpha in (("full", context["full"], 1.0), ("dose01", context["dose"], 0.1)):
             legacy.validate_run(root, patient, seed, context, alpha)
             path = root / "checkpoints" / f"shadow_{a}_seed{seed}_patient{pid}.pt"
@@ -248,13 +250,15 @@ def run_seed(args, context, legacy, score, pilot, seed, core_patients, monitor_p
             d = d64(d_dev)
             t1 = time.time()
             gL0_at_a = d64(score.shadow_loss_grad(model_a, X, y, train, device, WD, args.hvp_batch))
-            b_a = d64(patient_gradients(score, model_a, X, y, idx, device).sum(0)) / N
+            b_a = d64(patient_gradients(score, model_a, X, y, idx, device)).sum(0) / N
             g_a = gL0_at_a - alpha * b_a                      # gradient of L_alpha at theta_alpha
             Hd = d64(hvp(d_dev))                              # (H_CE + wd I) d
             R = gL0_at_a - g0 - Hd - alpha * (b_a - b0)       # Taylor remainder (exact definition)
             stat = g_a - g0                                   # endpoint-stationarity term
             e = Hd - alpha * b0                               # gamma = 0 static residual at the true d
             closure = core.norm(e - (stat - R))               # float rounding only; identity is exact
+            if not all(torch.isfinite(v).all() for v in (d, g0, g_a, Hd, R, b0, b_a)):
+                raise RuntimeError("Non-finite E0 vector")
             ab = alpha * b0
             row = {
                 "seed": seed, "patient_id": pid, "oct_class": int(patient["oct_class"]), "condition": condition,
@@ -322,18 +326,23 @@ def main():
                                    "residual direction sum to one. Dropout-MC quantities are labelled separately "
                                    "and are not mixed with the eval Hessian.")}
     legacy.write_json(output / "manifest.json", manifest)
+    fingerprints = {}
     try:
         ctx_args = argparse.Namespace(full_dir=args.full_dir, dose_dir=args.dose_dir, mode="damping",
                                       data_dir=args.data_dir, seeds=args.seeds)
+        v11 = legacy.module_from_path("e0_metadata_v11", HERE / "12_stage1_diagnostics_v11.py")
+        context = v11.metadata_context(ctx_args, pilot)
+        fingerprints = {str(p): legacy.sha(p) for p in legacy.input_paths(context, ctx_args)}
+        legacy.write_json(output / "input_sha256.json", fingerprints)
         context = legacy.load_context(ctx_args, pilot)
+        manifest["loaded_data_sha256"] = {
+            key: hashlib.sha256(memoryview(context[key]).cast("B")).hexdigest() for key in ("X", "y")}
         panel_ids = [int(p["patient_id"]) for p in context["patients"]]
         core_patients = set(args.core_patients)
         monitor_patients = set(args.monitor_patients) if args.monitor_patients is not None else set(panel_ids)
         missing = (core_patients | monitor_patients) - set(panel_ids)
         if missing:
             raise RuntimeError(f"Requested patients not in the frozen panel: {sorted(missing)}")
-        fingerprints = {str(p): legacy.sha(p) for p in legacy.input_paths(context, ctx_args)}
-        legacy.write_json(output / "input_sha256.json", fingerprints)
         seed_records, monitor_rows, rows = [], [], []
         for seed in args.seeds:
             LOG.info("START E0 seed=%d", seed)
@@ -344,17 +353,21 @@ def main():
             legacy.write_csv(output / "e0_rows.csv", rows)
             legacy.write_csv(output / "signal_monitor.csv", monitor_rows)
             legacy.write_json(output / "e0_rows.json", {"seeds": seed_records, "rows": rows, "monitor": monitor_rows})
-        after = {str(p): legacy.sha(p) for p in legacy.input_paths(context, ctx_args)}
         manifest.update(status="complete", elapsed_seconds=time.time() - started, n_rows=len(rows),
-                        n_monitor_rows=len(monitor_rows), input_files_unchanged=(after == fingerprints),
+                        n_monitor_rows=len(monitor_rows),
                         core_patients=sorted(core_patients), monitor_patients=sorted(monitor_patients))
-        if after != fingerprints:
-            manifest["status"] = "complete_but_inputs_changed"
-        legacy.write_json(output / "manifest.json", manifest)
     except Exception as exc:  # noqa: BLE001
         manifest.update(status="failed", error=repr(exc), elapsed_seconds=time.time() - started)
         legacy.write_json(output / "manifest.json", manifest)
         raise
+    finally:
+        changed = [p for p, h in fingerprints.items() if not Path(p).is_file() or legacy.sha(Path(p)) != h]
+        manifest.update(changed_inputs=changed, input_files_unchanged=not changed)
+        if changed:
+            manifest["status"] = "failed_inputs_changed"
+        legacy.write_json(output / "manifest.json", manifest)
+        if changed:
+            raise RuntimeError("Original E0 input files changed")
     LOG.info("E0 complete: %d rows, %d monitor rows, %.1fs", len(rows), len(monitor_rows), time.time() - started)
 
 

@@ -141,11 +141,11 @@ def main():
               "--attack_seeds", *args.attack_seeds, "--save_epoch_checkpoints", args.shadow_epochs//2, args.shadow_epochs]
     if args.condition in DOSE_CONDITIONS:
         common += ["--deletion_weight", DOSE_CONDITIONS[args.condition]]
-    if args.patients:
-        common += ["--loo_patients", *args.patients]
     elif args.condition in ("early", "late"):
         mid = args.shadow_epochs//2
         common += ["--removal_epochs", f"0:{mid}" if args.condition == "early" else f"{mid}:{args.shadow_epochs}"]
+    if args.patients:
+        common += ["--loo_patients", *args.patients]
     if args.phase in ("baseline", "truth"):
         run("05_end_to_end_patient_loo_pilot.py", common + (["--baseline_only"] if args.phase == "baseline" else []))
     if args.phase == "score":

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""E0 regression: algebra closure, sign conventions and finite-difference Hessian check.
+"""E0 regression: algebra closure, signs and independent forward-AD Hessian check.
 
 Only the OCT image loader is mocked; the SmallCNN, 05 training, 07 gradients/HVP
 and the E0 entry point all run on tiny real tensors.
@@ -41,6 +41,7 @@ def build_fixture(td: Path):
         p = pilot.parse_args()
     p.n_shadow, p.affected_shadow, p.seeds, p.classes, p.n_patients = 1, 0, [42], [1, 2], 2
     p.shadow_epochs, p.attack_epochs, p.shadow_batch_size, p.attack_batch_size = 2, 2, 4, 4
+    p.save_epoch_checkpoints = [1, 2]
     p.deletion_mode, p.attack_seeds, p.output_dir, p.n_total_samples = "fixed_mask", [5101], str(full), 16
     for root, alpha in ((full, 1.), (dose, .1)):
         legacy.write_json(root / "splits/fresh_patient_split.json", split)
@@ -53,7 +54,8 @@ def build_fixture(td: Path):
         legacy.write_json(root / "baseline_seed42.json", {})
     orders = pilot.make_epoch_orders(np.arange(4), 2, 700042)
     baseline, metrics = pilot.train_classifier_from_orders(
-        X, y, orders, [4, 5, 6, 7], 42, 128, p.shadow_lr, 4, 1e-5, True, deletion_mode="fixed_mask")
+        X, y, orders, [4, 5, 6, 7], 42, 128, p.shadow_lr, 4, 1e-5, True, deletion_mode="fixed_mask",
+        epoch_checkpoint_dir=full / "checkpoints/baseline_seed42_epochs", epoch_checkpoints=[1, 2])
     for root in (full, dose):
         pilot.save_model(root / "checkpoints/shadow_0_baseline_seed42.pt", baseline, {"seed": 42, "metrics": metrics})
         np.savez_compressed(root / "stage1_order_seed42.npz", raw_index_order=orders)
@@ -70,6 +72,13 @@ def build_fixture(td: Path):
                 "exposure": {"deletion_weight": alpha},
                 "conditions": {"J00": {"per_class": {str(patient["oct_class"]): {
                     "attack_seeds": p.attack_seeds, "per_rep_cross_entropy": [0.5], "cross_entropy": 0.5}}}}})
+            raw = np.arange(8)
+            membership = np.asarray([1]*4 + [0]*4)
+            np.savez_compressed(root / f"runs/seed42_patient{pid}_interface.npz",
+                                raw_index=raw, oct_class=y[raw], baseline_membership=membership,
+                                loo_membership=membership, is_deleted_patient=(groups[raw] == pid),
+                                p_baseline=pilot.get_predictions(baseline, X[raw]),
+                                p_loo=pilot.get_predictions(model, X[raw]))
     return X, y, groups, full, dose
 
 
@@ -116,8 +125,8 @@ class E0Tests(unittest.TestCase):
             d = (core.flat(model_a) - theta0).to(DEVICE)
             Hd = e0.d64(hvp(d))
             # forward-over-reverse reference: jvp of the exact eval gradient along d, float64.
-            # (A finite difference is not a valid reference for a ReLU/max-pool network: the
-            # gradient is piecewise smooth and a step of any size may cross a kink.)
+            # Finite differences need a step-size ladder and branch/roundoff checks:
+            # one failed step is not enough to invalidate that validation method.
             from torch.func import functional_call, grad, jvp
             m64 = legacy.model_from_payload(base, pilot, X, y).double().eval()
             names = [n for n, _ in m64.named_parameters()]

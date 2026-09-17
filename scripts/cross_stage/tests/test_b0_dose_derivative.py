@@ -27,7 +27,7 @@ PATIENT = {"patient_id": 807, "oct_class": 1, "class_name": "DME", "n_images": 1
 
 
 def write_dose_dir(root: Path, alpha: float, theta0, displacement, *, seed=42, rng="fp",
-                   patient=PATIENT, split_hash="abc123", overrides=None):
+                   patient=PATIENT, split_hash=None, overrides=None):
     """A minimal but structurally faithful 05 output directory."""
     args = {"seeds": [seed], "affected_shadow": 0, "split_seed": 42005, "selection_seed": 42006,
             "target_seed": 42007, "fixed_shadow_seed": 42100, "shadow_epochs": 50, "shadow_lr": 1e-3,
@@ -35,6 +35,9 @@ def write_dose_dir(root: Path, alpha: float, theta0, displacement, *, seed=42, r
             "window_membership": "value_only", "deterministic": True, "n_total_samples": 40000,
             "target_data_size": 2000, "shadow_data_size": 2000, "n_shadow": 5, "classes": [1, 2],
             "deletion_weight": alpha, "removal_epochs": None, **(overrides or {})}
+    legacy.write_json(root / "splits/fresh_patient_split.json", {"shadow_models": [{"train_idx": [0, 1], "test_idx": [2, 3]}]})
+    split_hash = split_hash or legacy.sha(root / "splits/fresh_patient_split.json")[:16]
+    np.savez_compressed(root / f"stage1_order_seed{seed}.npz", raw_index_order=np.tile([0, 1], (50, 1)))
     legacy.write_json(root / "experiment_config.json",
                       {"training_numerics": pilot.TRAINING_NUMERICS, "args": args,
                        "oct_config": {"target_l2": 1e-5, "optimizer_type": "adam"}})
@@ -51,7 +54,8 @@ def write_dose_dir(root: Path, alpha: float, theta0, displacement, *, seed=42, r
     (root / "runs").mkdir(parents=True, exist_ok=True)
     p0 = np.full((4, 4), 0.25, dtype=np.float32)
     np.savez_compressed(root / "runs" / f"seed{seed}_patient{patient['patient_id']}_interface.npz",
-                        p_baseline=p0, p_loo=p0 + np.float32(alpha) * np.float32(0.01))
+                        p_baseline=p0, p_loo=p0 + np.float32(alpha) * np.float32(0.01),
+                        raw_index=np.arange(4), oct_class=np.arange(4), baseline_membership=np.array([1, 1, 0, 0]))
 
 
 def make_ladder(td: Path, alphas, *, curvature=0.0, **kw):
@@ -107,7 +111,7 @@ class B0Tests(unittest.TestCase):
             _, summary = self.run_b0(roots, td / "out")
             self.assertFalse(summary["verdict"]["resolved_band"])
             self.assertIsNotNone(summary["verdict"]["below_storage_resolution"])
-            self.assertIn("float32 checkpoint floor", summary["verdict"]["below_storage_resolution"][0])
+            self.assertIn("float32 resolution heuristic", summary["verdict"]["below_storage_resolution"][0])
 
     def test_strong_curvature_at_large_dose_is_reported_as_unresolved_not_absent(self):
         with tempfile.TemporaryDirectory() as td:
@@ -175,6 +179,61 @@ class B0Tests(unittest.TestCase):
         self.assertEqual(run10.DOSE_CONDITIONS["dose0001"], 0.001)
         # every dose condition maps to a distinct directory suffix and a distinct alpha
         self.assertEqual(len(set(run10.DOSE_CONDITIONS.values())), len(run10.DOSE_CONDITIONS))
+
+    def test_seed_subset_is_allowed_but_weight_decay_change_is_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            roots = make_ladder(td, [0.1, .03, .01])
+            config = legacy.read_json(roots[0] / "experiment_config.json")
+            config["args"]["seeds"] = [42, 43, 44, 45, 46]
+            legacy.write_json(roots[0] / "experiment_config.json", config)
+            _, result = self.run_b0(roots, td / "out")
+            self.assertTrue(result["verdict"]["resolved_band"])
+            config["oct_config"]["target_l2"] = .01
+            legacy.write_json(roots[0] / "experiment_config.json", config)
+            with self.assertRaisesRegex(RuntimeError, "target_l2"):
+                self.run_b0(roots, td / "bad")
+
+    def test_interface_row_permutation_is_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            roots = make_ladder(td, [0.1, .03, .01])
+            path = roots[1] / "runs/seed42_patient807_interface.npz"
+            with np.load(path) as z:
+                values = {k: z[k].copy() for k in z.files}
+            values["raw_index"] = values["raw_index"][::-1]
+            np.savez_compressed(path, **values)
+            with self.assertRaisesRegex(RuntimeError, "row identities"):
+                self.run_b0(roots, td / "bad")
+
+    def test_h_probe_matches_class_and_rejects_wrong_seed(self):
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            roots = make_ladder(td, [.1, .03, .01])
+            meta = {"seed": 42, "split_sha256": legacy.read_json(roots[0] / "experiment_summary.json")["split_sha256"],
+                    "baseline_sha256": legacy.sha(roots[0] / "checkpoints/shadow_0_baseline_seed42.pt"),
+                    "classes": {str(c): {"checks": [{"attack_solve_reliable": True}]} for c in [1, 2]}}
+            probe = {"metadata": meta, "h_by_class": {1: torch.ones(1, 64), 2: torch.ones(1, 64)*99}}
+            path = td / "h.pt"
+            torch.save(probe, path)
+            self.run_b0(roots, td / "out", ["--h_probe", str(path)])
+            rows = list(csv_rows(td / "out/b0_rows.csv"))
+            base = b0.parameter_vector(legacy.load_payload(roots[0] / "checkpoints/shadow_0_baseline_seed42.pt", pilot))
+            pert = b0.parameter_vector(legacy.load_payload(roots[0] / "checkpoints/shadow_0_seed42_patient807.pt", pilot))
+            self.assertAlmostEqual(float(rows[0]["h_projection_derivative"]), float((pert-base).sum()/.1))
+            meta["seed"] = 43
+            torch.save(probe, path)
+            with self.assertRaisesRegex(RuntimeError, "h probe seed mismatch"):
+                self.run_b0(roots, td / "bad", ["--h_probe", str(path)])
+
+    def test_disconnected_passing_pairs_are_not_one_resolved_band(self):
+        rows = []
+        for a, larger, passed in [(0.1, 1., True), (.03, .1, False), (.01, .03, True)]:
+            rows.append(dict(alpha=a, larger_alpha=larger, parameter_cosine_vs_larger=1.,
+                             parameter_relative_change_vs_larger=.001 if passed else 1.))
+        result = b0.verdict(rows, .05, .05)
+        self.assertFalse(result["resolved_band"])
+        self.assertEqual(result["contiguous_candidate_bands"], [[1., .1], [.03, .01]])
 
 
 def csv_rows(path):

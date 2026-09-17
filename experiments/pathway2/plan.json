@@ -1,8 +1,14 @@
 {
   "schema": "oct_pathway2_plan_v1",
   "base_commit": "ba8db97887e18ea1bbf33f67b04d6eba69f47b70",
-  "status": "protocol_and_preflight_only",
-  "gpu_runners_implemented": false,
+  "status": "e0_b0_implemented_cpu_validated_cuda_pending",
+  "gpu_runners_implemented": {
+    "E0": true,
+    "B0": true,
+    "A": false,
+    "B1": false,
+    "B2": false
+  },
   "gpu_jobs_submitted": 0,
   "global_gpu_limit_design": 4,
   "core_panel": {
@@ -26,7 +32,6 @@
     2023
   ],
   "frozen_contract": "frozen_baseline.json",
-  "raw_dataset_snapshot_required_on_delta": true,
   "default_resource_proposal": {
     "gpus_per_job": 1,
     "cpus_per_task": 8,
@@ -48,7 +53,7 @@
   "tasks": [
     {
       "id": "E0",
-      "status": "planned_not_implemented",
+      "status": "implemented_cuda_validation_pending",
       "seeds": [
         42,
         43
@@ -64,11 +69,12 @@
       "n_core_conditions": 8,
       "new_training_runs": 0,
       "shared_result": "read-only by A",
-      "measurement": "paired_gradient_residual_vs_Taylor_remainder; frozen_source_eval_objective; signal_monitor_all_eight"
+      "measurement": "paired_gradient_residual_vs_Taylor_remainder; frozen_source_eval_objective; signal_monitor_all_eight",
+      "entrypoint": "scripts/cross_stage/13_e0_residual_decomposition.py"
     },
     {
       "id": "B0",
-      "status": "planned_not_implemented",
+      "status": "implemented_cuda_validation_pending",
       "array_indices": [
         0,
         1
@@ -83,16 +89,17 @@
         2085
       ],
       "alphas": [
+        0.03,
         0.01,
         0.003,
         0.001
       ],
-      "n_perturbation_runs": 12,
+      "n_perturbation_runs": 16,
       "n_baseline_noop_runs": 2,
-      "total_training_runs": 14,
+      "total_training_runs": 18,
       "epochs_source": "frozen_baseline.settings.shadow_epochs",
       "full_window": true,
-      "entrypoint": null,
+      "entrypoint": "scripts/cross_stage/14_b0_train.py",
       "measurements": [
         "D_alpha_theta",
         "D_alpha_prediction",
@@ -100,7 +107,9 @@
         "effective_float_loss_weight",
         "no_op_bitwise_parameters_and_rng"
       ],
-      "elapsed_time_estimate": null
+      "elapsed_time_estimate": null,
+      "stage2_retrained": false,
+      "consecutive_passing_pairs_required": 2
     },
     {
       "id": "B1-smoke",
@@ -124,7 +133,8 @@
         "primal_matches_original",
         "rng_stream_matches",
         "finite_difference_resolved_and_matches",
-        "zero_moment_coordinates_finite"
+        "zero_moment_coordinates_finite",
+        "absent_patient_zero_tangent_invariant_plus_nonzero_jacobian_tests"
       ],
       "scientific_dependencies": []
     },
@@ -169,5 +179,9 @@
       ],
       "hybrid_label_if_stage2_implicit": "Stage-1 trajectory + Stage-2 implicit"
     }
-  ]
+  ],
+  "first_wave_submission": "scripts/cross_stage/submit_e0_b0.sh",
+  "first_wave_max_gpus": 3,
+  "historical_raw_dataset_snapshot_available": false,
+  "loaded_data_array_hashes_required": true
 }

@@ -85,7 +85,10 @@ def parameter_vector(payload):
     state = payload["state_dict"]
     if not all(torch.is_floating_point(t) for t in state.values()):
         raise RuntimeError("Expected the buffer-free v4.1 SmallCNN state dictionary")
-    return torch.cat([v.detach().cpu().double().reshape(-1) for v in state.values()])
+    result = torch.cat([v.detach().cpu().double().reshape(-1) for v in state.values()])
+    if not torch.isfinite(result).all():
+        raise RuntimeError("Non-finite checkpoint parameters")
+    return result
 
 
 def read_dose_directory(legacy, pilot, root: Path, seeds):
@@ -96,7 +99,8 @@ def read_dose_directory(legacy, pilot, root: Path, seeds):
     panel = legacy.read_json(root / "selected_patients.json")
     pilot.require_training_numerics(config, str(root))
     a = config["args"]
-    legacy.assert_equal(summary["status"], "complete", f"{root.name}: truth is incomplete")
+    if summary["status"] not in ("complete", "stage1_probe_complete"):
+        raise RuntimeError(f"{root.name}: Stage-1 perturbations are incomplete")
     legacy.assert_equal(a["deletion_mode"], "fixed_mask", f"{root.name}: expected fixed_mask")
     legacy.assert_equal(a.get("removal_epochs"), None, f"{root.name}: windowed truth is not comparable")
     legacy.assert_equal(a["deterministic"], True, f"{root.name}: strict determinism is required")
@@ -106,15 +110,25 @@ def read_dose_directory(legacy, pilot, root: Path, seeds):
     missing = [s for s in seeds if s not in a["seeds"]]
     if missing:
         raise RuntimeError(f"{root.name}: seeds {missing} were not trained here")
+    if summary["status"] == "stage1_probe_complete":
+        noop = summary["noop_replay"]
+        if not noop["parameters_exact"] or not noop["interface_exact"] or noop["displacement_norm"] != 0:
+            raise RuntimeError("Stage-1 no-op gate failed")
+        if a["shadow_epochs"] not in noop["optimizer_rng_epochs_exact"]:
+            raise RuntimeError("Missing final optimizer/RNG replay gate")
+    split = root / "splits/fresh_patient_split.json"
+    legacy.assert_equal(legacy.sha(split)[:16], summary["split_sha256"], "Split file hash mismatch")
+    legacy.assert_equal(panel["split_sha256"], summary["split_sha256"], "Panel split hash mismatch")
+    available = set(summary.get("completed_patients", [p["patient_id"] for p in panel["patients"]]))
     return {"root": root, "alpha": alpha, "config": config, "summary": summary,
             "panel": panel, "shadow": int(a["affected_shadow"]),
-            "patients": {int(p["patient_id"]): p for p in panel["patients"]}}
+            "patients": {int(p["patient_id"]): p for p in panel["patients"] if p["patient_id"] in available}}
 
 
 def cross_validate(doses):
     """Every dose must describe the same split, panel and Stage-1 training contract."""
     reference = doses[0]
-    keys = ("seeds", "affected_shadow", "split_seed", "selection_seed", "target_seed",
+    keys = ("attack_seeds", "affected_shadow", "split_seed", "selection_seed", "target_seed",
             "fixed_shadow_seed", "shadow_epochs", "shadow_lr", "shadow_batch_size",
             "attack_epochs", "deletion_mode", "window_membership", "deterministic",
             "n_total_samples", "target_data_size", "shadow_data_size", "n_shadow", "classes")
@@ -132,10 +146,20 @@ def cross_validate(doses):
                                    f"{reference['root'].name} in {key}")
         if entry["summary"]["split_sha256"] != reference["summary"]["split_sha256"]:
             raise RuntimeError(f"{entry['root'].name}: different split")
+        for key in ("target_l2", "optimizer_type", "target_model_type", "n_hidden"):
+            if entry["config"]["oct_config"].get(key) != reference["config"]["oct_config"].get(key):
+                raise RuntimeError(f"Training contract differs in {key}")
+        if legacy_panel_key(entry["panel"]) != legacy_panel_key(reference["panel"]):
+            raise RuntimeError("Frozen patient panels differ")
         for pid, patient in entry["patients"].items():
             other = reference["patients"].get(pid)
             if other is not None and sorted(patient["raw_indices"]) != sorted(other["raw_indices"]):
                 raise RuntimeError(f"patient {pid}: raw indices differ between doses")
+
+
+def legacy_panel_key(panel):
+    return sorted((int(p["patient_id"]), int(p["oct_class"]), tuple(sorted(p["raw_indices"])))
+                  for p in panel["patients"])
 
 
 def baseline_vector(legacy, pilot, doses, seed):
@@ -152,17 +176,22 @@ def baseline_vector(legacy, pilot, doses, seed):
             raise RuntimeError(f"seed {seed}: baselines differ between dose directories "
                                f"({entry['root'].name}); the doses are not paired")
         vectors.append(parameter_vector(payload))
+        entry["parameter_layout"] = [(k, tuple(v.shape), v.dtype) for k, v in payload["state_dict"].items()]
+        if entry["parameter_layout"] != doses[0]["parameter_layout"]:
+            raise RuntimeError("Baseline parameter layout differs across doses")
     return vectors[0], rng
 
 
 def prediction_matrix(root: Path, seed: int, pid: int):
     """Affected-shadow prediction rows saved by 05 for this cell (baseline and perturbed)."""
     path = root / "runs" / f"seed{seed}_patient{pid}_interface.npz"
-    if not path.is_file():
-        return None, None
     with np.load(path) as payload:
-        return (torch.as_tensor(payload["p_baseline"], dtype=torch.float64).reshape(-1),
-                torch.as_tensor(payload["p_loo"], dtype=torch.float64).reshape(-1))
+        meta = {k: payload[k].copy() for k in ("raw_index", "oct_class", "baseline_membership")}
+        matrices = [torch.as_tensor(payload[k], dtype=torch.float64).reshape(-1)
+                    for k in ("p_baseline", "p_loo")]
+        if not all(torch.isfinite(v).all() for v in matrices):
+            raise RuntimeError("Non-finite interface probabilities")
+        return *matrices, meta
 
 
 def stability(current, previous):
@@ -175,14 +204,15 @@ def stability(current, previous):
 
 
 def verdict(rows, direction_tol, magnitude_tol):
-    """Lowest adjacent pair that passes both engineering gates, if any."""
+    """Per-cell contiguous candidate bands; two consecutive passing pairs to resolve."""
     unresolved = [r for r in rows if not r.get("above_storage_resolution", True)]
     passing = [r for r in rows if r["parameter_cosine_vs_larger"] is not None
                and r.get("above_storage_resolution", True)
+               and r.get("larger_above_storage_resolution", True)
                and (1 - r["parameter_cosine_vs_larger"]) <= direction_tol
                and r["parameter_relative_change_vs_larger"] is not None
                and r["parameter_relative_change_vs_larger"] <= magnitude_tol]
-    floor_note = ([f"alpha={r['alpha']:g} is within 100x of the float32 checkpoint floor and was "
+    floor_note = ([f"alpha={r['alpha']:g} is within 100x of the float32 resolution heuristic and was "
                    "excluded from the gate" for r in unresolved] or None)
     if not passing:
         return {"resolved_band": False,
@@ -191,12 +221,21 @@ def verdict(rows, direction_tol, magnitude_tol):
                               "not evidence that a local derivative does not exist."),
                 "smallest_passing_alpha": None, "largest_passing_alpha": None,
                 "below_storage_resolution": floor_note}
-    alphas = sorted({r["alpha"] for r in passing} | {r["larger_alpha"] for r in passing})
-    return {"resolved_band": True,
+    bands = []
+    for row in sorted(passing, key=lambda r: -r["alpha"]):
+        if bands and bands[-1][-1] == row["larger_alpha"]:
+            bands[-1].append(row["alpha"])
+        else:
+            bands.append([row["larger_alpha"], row["alpha"]])
+    qualified = [band for band in bands if len(band) >= 3]
+    chosen = min(qualified, key=lambda b: min(b)) if qualified else None
+    return {"resolved_band": bool(qualified), "contiguous_candidate_bands": bands,
             "statement": ("Adjacent doses agree within the pre-registered engineering tolerance over "
-                          "this band. The band is a numerical observation about the probe, not a "
+                          "each listed candidate band; resolution requires two consecutive passing pairs. "
+                          "This is a numerical observation about the probe, not a "
                           "proof of local linearity over the full deletion."),
-            "smallest_passing_alpha": min(alphas), "largest_passing_alpha": max(alphas),
+            "smallest_passing_alpha": min(chosen) if chosen else None,
+            "largest_passing_alpha": max(chosen) if chosen else None,
             "n_passing_pairs": len(passing), "below_storage_resolution": floor_note}
 
 
@@ -213,21 +252,33 @@ def run(args, legacy, score, pilot, doses, output):
     LOG.info("dose ladder alpha=%s patients=%s seeds=%s",
              [e["alpha"] for e in ladder], patients, args.seeds)
 
-    probe = None
-    if args.h_probe:
-        payload = torch.load(Path(args.h_probe).resolve(), weights_only=False, map_location="cpu")
-        stacked = torch.cat([torch.as_tensor(v).reshape(-1, v.shape[-1]).double()
-                             for v in payload["h_by_class"].values()])
-        probe = stacked.mean(0)
-        LOG.info("fixed h probe from %s: %d rows, ||h||=%.4g",
-                 args.h_probe, stacked.shape[0], core.norm(probe))
-
     rows = []
     for seed in args.seeds:
         theta0, rng = baseline_vector(legacy, pilot, ladder, seed)
+        probes = None
+        if args.h_probe:
+            probe_path = Path(args.h_probe.format(seed=seed)).resolve()
+            payload = torch.load(probe_path, weights_only=False, map_location="cpu")
+            md = payload["metadata"]
+            legacy.assert_equal(md["seed"], seed, "h probe seed mismatch")
+            legacy.assert_equal(md["split_sha256"], ladder[0]["summary"]["split_sha256"], "h probe split mismatch")
+            base_path = ladder[0]["root"] / "checkpoints" / f"shadow_{ladder[0]['shadow']}_baseline_seed{seed}.pt"
+            legacy.assert_equal(md["baseline_sha256"], legacy.sha(base_path), "h probe baseline mismatch")
+            probes = {int(k): v.detach().cpu().double() for k, v in payload["h_by_class"].items()}
+            for cls, value in probes.items():
+                if value.ndim != 2 or value.shape[1] != len(theta0) or not torch.isfinite(value).all():
+                    raise RuntimeError("Invalid h probe parameter layout/values")
+                checks = md["classes"][str(cls)]["checks"]
+                if not checks or len(checks) != value.shape[0] or not all(c["attack_solve_reliable"] for c in checks):
+                    raise RuntimeError("Unqualified Stage-2 implicit h solve")
+                expected_seeds = ladder[0]["config"]["args"].get("attack_seeds")
+                if expected_seeds is not None:
+                    legacy.assert_equal([c["attack_seed"] for c in checks], expected_seeds, "h attack seed mismatch")
         for pid in patients:
             patient = ladder[0]["patients"][pid]
-            previous = {"parameter": None, "prediction": None, "alpha": None}
+            previous = {"parameter": None, "prediction": None, "alpha": None, "resolved": False, "h": None}
+            baseline_p, baseline_meta, baseline_orders = None, None, None
+            probe = probes[int(patient["oct_class"])] if probes is not None else None
             for entry in ladder:
                 alpha, root = entry["alpha"], entry["root"]
                 path = root / "checkpoints" / f"shadow_{entry['shadow']}_seed{seed}_patient{pid}.pt"
@@ -240,14 +291,23 @@ def run(args, legacy, score, pilot, doses, output):
                 legacy.assert_equal(md["metrics"]["post_train_rng_sha256"], rng,
                                     f"{path.name}: fixed_mask RNG fingerprint differs from the baseline")
                 theta_a = parameter_vector(payload)
+                layout = [(k, tuple(v.shape), v.dtype) for k, v in payload["state_dict"].items()]
+                if layout != entry["parameter_layout"]:
+                    raise RuntimeError("Perturbed checkpoint parameter layout differs")
                 d = theta_a - theta0
                 D = d / alpha
-                # Checkpoints are stored in float32, so theta carries ~eps*||theta|| of
-                # representation noise and the difference of two checkpoints carries about
-                # sqrt(2) of it. Below this the ladder measures storage, not training.
+                # Conservative scale heuristic, NOT measured stochastic noise or a
+                # rigorous error bound. Float32 stored values are subtracted in float64.
                 floor = float(np.finfo(np.float32).eps) * np.sqrt(2.0) * max(
                     core.norm(theta0), core.norm(theta_a))
-                p0, p1 = prediction_matrix(root, seed, pid)
+                p0, p1, meta = prediction_matrix(root, seed, pid)
+                with np.load(root / f"stage1_order_seed{seed}.npz") as z:
+                    orders = z["raw_index_order"].copy()
+                if baseline_p is None:
+                    baseline_p, baseline_meta, baseline_orders = p0, meta, orders
+                elif not torch.equal(p0, baseline_p) or not np.array_equal(orders, baseline_orders) or any(
+                        not np.array_equal(meta[k], baseline_meta[k]) for k in meta):
+                    raise RuntimeError("Baseline interface/row identities/batch orders differ across doses")
                 Dp = (p1 - p0) / alpha if p0 is not None else None
                 row = {
                     "seed": seed, "patient_id": pid, "oct_class": int(patient["oct_class"]),
@@ -257,6 +317,8 @@ def run(args, legacy, score, pilot, doses, output):
                     "float32_resolution_floor": floor,
                     "displacement_over_floor": core.norm(d) / floor if floor else None,
                     "above_storage_resolution": bool(core.norm(d) > 100 * floor),
+                    "larger_above_storage_resolution": previous["resolved"],
+                    "effective_float32_deletion_weight": float(1.0 - np.float32(1.0-alpha)),
                 }
                 for space, current, name in (("parameter", D, "parameter"),
                                              ("prediction", Dp, "prediction")):
@@ -266,28 +328,38 @@ def run(args, legacy, score, pilot, doses, output):
                 if Dp is not None:
                     row["prediction_derivative_norm"] = core.norm(Dp)
                 if probe is not None:
-                    row["h_projection"] = float(torch.dot(probe, d))
-                    row["h_projection_derivative"] = float(torch.dot(probe, D))
+                    hd = probe @ D
+                    row["h_projection"] = float((probe @ d).mean())
+                    row["h_projection_derivative"] = float(hd.mean())
+                    row["h_projection_derivative_by_attack_seed"] = hd.tolist()
+                    row["h_projection_derivative_relative_change_vs_larger"] = stability(hd, previous["h"])["relative_change"]
                 rows.append(row)
-                previous = {"parameter": D, "prediction": Dp, "alpha": alpha}
+                previous = {"parameter": D, "prediction": Dp, "alpha": alpha,
+                            "resolved": row["above_storage_resolution"], "h": hd if probe is not None else None}
                 LOG.info("seed=%d patient=%d alpha=%g ||d||=%.4g ||D||=%.4g cos_vs_larger=%s",
                          seed, pid, alpha, row["displacement_norm"], row["derivative_norm"],
                          "n/a" if row["parameter_cosine_vs_larger"] is None
                          else f"{row['parameter_cosine_vs_larger']:.4f}")
     legacy.write_csv(output / "b0_rows.csv", rows)
-    summary = verdict(rows, args.direction_tol, args.magnitude_tol)
     per_cell = {}
     for row in rows:
         key = f"seed{row['seed']}_patient{row['patient_id']}"
         per_cell.setdefault(key, []).append(row)
+    cell_verdicts = {k: verdict(v, args.direction_tol, args.magnitude_tol) for k, v in per_cell.items()}
+    summary = {"resolved_band": all(v["resolved_band"] for v in cell_verdicts.values()),
+               "policy": "all requested cells must individually have a contiguous resolved band",
+               "n_resolved_cells": sum(v["resolved_band"] for v in cell_verdicts.values()),
+               "n_cells": len(cell_verdicts)}
+    if len(cell_verdicts) == 1:
+        summary.update(next(iter(cell_verdicts.values())))
     legacy.write_json(output / "b0_summary.json", {
         "ladder": [{"alpha": e["alpha"], "directory": str(e["root"])} for e in ladder],
         "patients": patients, "seeds": args.seeds,
         "gates": {"direction_tol": args.direction_tol, "magnitude_tol": args.magnitude_tol,
-                  "note": "Pre-registered engineering tolerances, not theoretical constants."},
+                  "consecutive_passing_pairs_required": 2,
+                  "note": "Pre-registered engineering tolerances; float32 resolution scale is a heuristic, not measured noise."},
         "verdict": summary,
-        "per_cell_verdict": {k: verdict(v, args.direction_tol, args.magnitude_tol)
-                             for k, v in per_cell.items()},
+        "per_cell_verdict": cell_verdicts,
         "h_probe": str(Path(args.h_probe).resolve()) if args.h_probe else None,
         "h_probe_role": ("Fixed original-attack Stage-1 direction used as a diagnostic probe. It is "
                          "not re-derived at the perturbed endpoints and is not a trajectory h."),
@@ -322,25 +394,42 @@ def main():
                     HERE / "stage1_diagnostic_core.py", Path(__file__))},
                 "method": "checkpoint differences only; no training, no Hessian, no attack"}
     legacy.write_json(output / "manifest.json", manifest)
+    fingerprints = {}
     try:
         doses = [read_dose_directory(legacy, pilot, root, args.seeds) for root in args.dose_dirs]
         cross_validate(doses)
         inputs = []
         for entry in doses:
             inputs.extend(entry["root"] / name for name in (
-                "experiment_config.json", "experiment_summary.json", "selected_patients.json"))
+                "experiment_config.json", "experiment_summary.json", "selected_patients.json",
+                "splits/fresh_patient_split.json"))
+            for seed in args.seeds:
+                inputs += [entry["root"] / "checkpoints" / f"shadow_{entry['shadow']}_baseline_seed{seed}.pt",
+                           entry["root"] / f"stage1_order_seed{seed}.npz"]
+                for pid in args.patients or sorted(entry["patients"]):
+                    inputs += [entry["root"] / "checkpoints" / f"shadow_{entry['shadow']}_seed{seed}_patient{pid}.pt",
+                               entry["root"] / "runs" / f"seed{seed}_patient{pid}_interface.npz"]
+        if args.h_probe:
+            inputs += [Path(args.h_probe.format(seed=s)).resolve() for s in args.seeds]
         fingerprints = {str(p): legacy.sha(p) for p in inputs}
         legacy.write_json(output / "input_sha256.json", fingerprints)
         rows, summary = run(args, legacy, score, pilot, doses, output)
-        after = {str(p): legacy.sha(p) for p in inputs}
-        manifest.update(status="complete" if after == fingerprints else "complete_but_inputs_changed",
+        manifest.update(status="complete",
                         elapsed_seconds=time.time() - started, n_rows=len(rows),
-                        input_files_unchanged=(after == fingerprints), verdict=summary)
+                        verdict=summary)
         legacy.write_json(output / "manifest.json", manifest)
     except Exception as exc:  # noqa: BLE001
         manifest.update(status="failed", error=repr(exc), elapsed_seconds=time.time() - started)
         legacy.write_json(output / "manifest.json", manifest)
         raise
+    finally:
+        changed = [p for p, h in fingerprints.items() if not Path(p).is_file() or legacy.sha(Path(p)) != h]
+        manifest.update(changed_inputs=changed, input_files_unchanged=not changed)
+        if changed:
+            manifest["status"] = "failed_inputs_changed"
+        legacy.write_json(output / "manifest.json", manifest)
+        if changed:
+            raise RuntimeError("B0 analysis input files changed")
     LOG.info("B0 complete: %d rows, resolved_band=%s, %.1fs",
              len(rows), summary["resolved_band"], time.time() - started)
 

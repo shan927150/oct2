@@ -71,7 +71,13 @@ def verify(baseline: Path, output: Path, contract: dict, plan: dict) -> dict:
     )
     if ancestor.returncode != 0:
         raise ValueError("Current commit does not descend from the frozen source commit")
-    branch_failures = validate_hashes(SOURCE_ROOT, contract["source_sha256"])
+    # Original-source hashes remain immutable. Reviewed branch additions/CLI edits
+    # have a separate manifest; this never changes checks on the baseline directory.
+    branch_manifest = HERE / "branch_source_sha256.json"
+    branch_hashes = dict(contract["source_sha256"])
+    if branch_manifest.is_file():
+        branch_hashes.update(json.loads(branch_manifest.read_text())["files_sha256"])
+    branch_failures = validate_hashes(SOURCE_ROOT, branch_hashes)
     original_source_failures = validate_hashes(baseline, contract["source_sha256"])
     input_failures = validate_hashes(baseline, contract["baseline_inputs_sha256"])
     passed = not (branch_failures or original_source_failures or input_failures)
@@ -87,13 +93,15 @@ def verify(baseline: Path, output: Path, contract: dict, plan: dict) -> dict:
         "source_files_per_root": len(contract["source_sha256"]),
         "baseline_files": len(contract["baseline_inputs_sha256"]),
         "branch_source_failures": branch_failures,
+        "branch_source_manifest_sha256": sha256(branch_manifest) if branch_manifest.is_file() else None,
         "original_source_failures": original_source_failures,
         "baseline_input_failures": input_failures,
         "dataset_bytes_checked": False,
         "new_runner_replay_checked": False,
         "gpu_jobs_submitted": 0,
-        "note": "Read-only verification. Record and verify dataset/cache bytes on Delta; "
-                "new runner replay/derivative gates are separate. Repeat checks after each job.",
+        "note": "Read-only file verification. Loaded-data array hashes and actual CUDA replay "
+                "are separate E0/B0 gates; no historical raw-image snapshot is claimed. "
+                "Repeat file checks after each job.",
     }
 
 

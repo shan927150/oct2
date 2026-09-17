@@ -2,7 +2,7 @@
 
 日期：2026-09-17。此协议取代上一版设计中“先把 A 作为主线前置条件”的排序。
 
-交付状态：两个独立分支、冻结哈希、任务矩阵和只读 preflight 已准备。E0、A、B0、B1、B2 的新计算 runner 尚未实现；本文件中的 GPU 任务是实验设计，不是已提交或已验收的作业。
+交付状态：E0 和 B0 已实现并有 CPU 回归验证；Delta CUDA 与真实数据验收待运行。A、B1、B2 仍是实验设计。B0 直接调用 05 原训练函数；14_b0_train 只负责原输入加载、一次重放验收和剂量调度。具体操作见 PATHWAY2_E0_B0_RUNBOOK_CN.md。
 
 ## 1. 分支与被估量
 
@@ -49,7 +49,7 @@ Git branch 只隔离代码；worktree、输出路径与输入完整性检查需�
 
 原训练过程还有初始化、CPU/CUDA 随机流和 Adam moments。配置相同不足以证明这些状态相同，需逐位 no-op/replay 检查。
 
-已知文件哈希覆盖上传审计记录中的输入；图像/cache 字节没有上传，本地不能补造历史数据哈希。训练前在 Delta 固化当前数据/cache 清单并在任务前后复核，同时验证 raw index、label、patient 映射和原 split。preflight 的文件完整性 PASS 不等于数据与新训练实现的全部验收已完成。
+已知文件哈希覆盖上传审计记录中的输入；图像字节没有上传，不能补造历史图像哈希。本轮额外记录各任务实际加载的 X/y 摘要，并在汇总时要求一致；B0 还必须逐位重放原参数、Adam 状态、RNG 与接口，核对 patient/raw index/split。此数据验收不等于历史原始 JPEG 的字节级快照。preflight 的文件完整性 PASS 也不等于 GPU 或新导数实现验收已完成。
 
 ## 3. 固定面板及 1369 的角色
 
@@ -97,21 +97,21 @@ A 中旧 h 只能作为固定探针。报告“微调后 h 的变化”时，必
 
 不预设“E0 一小时内”或“B0 15–20 分钟”。记录实际装载时间、一次 Stage 1 重放时间、HVP/梯度耗时、峰值显存，再调整 Slurm walltime。旧 dose01 的 score 时间不能直接折算为新的 Stage 1 训练时间。
 
-推荐最多同时 4 张 GPU，实际并发服从账户资源限制；每个计算任务先申请 1 GPU。此处是待实现的调度设计。
+首轮提交一个 CUDA 测试任务，成功后 E0 与两个 B0 seed 任务最多并行占 3 GPU；实际并发服从账户资源限制。B1-smoke 实现并通过短链验收后可使用第 4 张卡，A 暂不自动排队。
 
 | 任务 | 分支 | 首轮工作量 | 可与谁同时跑 |
 | --- | --- | --- | --- |
 | E0 | B，共享诊断结果供 A 读取 | 4 core cell × 2 剂量；两个 seed 的原 8 患者梯度监测 | B0、B1、A |
-| B0-seed42 | B | 1 次 baseline no-op + 2 patients × 3 小剂量 | E0、B0-seed43、B1、A |
+| B0-seed42 | B | 1 次 baseline no-op + 2 patients × 4 小剂量 | E0、B0-seed43、B1、A |
 | B0-seed43 | B | 同上 | E0、B0-seed42、B1、A |
 | B1-smoke | B | seed42/patient807，单个含患者 batch → 1 epoch → 5 epochs | E0、B0、A；后一级依赖前一级通过 |
 | A-pilot | A，可选 | seed42/patient807，baseline/full/dose01 × 2 续训方案；另测原 8 患者 b | 与 B 独立；资源不足时排后 |
 
-第一波可一次排队上述 5 个任务。E0 + 两个 B0 seed 任务 + B1-smoke 最多占 4 GPU；A-pilot 使用 afterany:E0_job 的资源接续依赖，等 E0 释放位置再运行。这样无需人工等结果，且 A 不依赖 B0 的科学结果。A 开始前仍执行自己的完整性检查。不能仅靠降低 A 的 priority 宣称存在严格并发上限。
+当前一键提交只排 CUDA 测试、E0、B0 array；后两者用 afterok 依赖测试。A-pilot 是否投入资源结合 E0 决定，E0 投影份额不作为排除静态路线的唯一依据。B1 可以在另一个 worktree 开发，避免改变已排队任务锁定的 B 工作树。
 
-B0 有 12 次扰动训练，加 2 次 baseline no-op，共 14 次 Stage 1 训练。按 seed 切成两个任务，可以在任务内复用已装载数据和 baseline，并避免多个任务写共享 checkpoint。
+B0 有 16 次扰动训练，加 2 次 baseline no-op，共 18 次 Stage 1 训练。按 seed 切成两个任务，在任务内复用已装载数据和原 baseline。原 target、其他 shadow、Stage-2 attack 不在 B0 重训；B0 结果明确标注 stage1_only_probe，不冒充新的 J10 truth。
 
-若未来使用 Slurm array，B0 array=0-1，每个任务跑自己的 6 个剂量/患者组合。所有组合独立输出，聚合使用 afterok 依赖；不能用多个任务并发执行旧的共享 summary 写入逻辑。
+B0 array=0-1%2，每个任务跑自己的 8 个剂量/患者组合，然后自动分析；输出包含 array job id 与 seed。所有组合独立输出，汇总必须等待两个任务完成。
 
 E0 不新增训练，但仍需要 GPU 梯度/HVP 运算。A 与 E0/B0 无科学上的强制先后关系；冻结完整性检查与各自实现验收仍是共同前置条件。
 
@@ -150,11 +150,13 @@ $$
 
 ## 7. B0：原算法的小剂量响应
 
-原 baseline、50 epochs、学习率、初始化、orders、dropout、wd 和原 batch 分母保持不变。从原初始化开始全程施加 alpha=0.01、0.003、0.001。
+原 baseline、50 epochs、学习率、初始化、orders、dropout、wd 和原 batch 分母保持不变。从原初始化开始全程施加 alpha=0.03、0.01、0.003、0.001。epochs 从冻结结果配置和原 order 数组读取，不由新脚本另定。
 
 记录 D_alpha=(theta_T(alpha)-theta_T(0))/alpha、prediction 空间差分，以及固定原 h 的投影。原 alpha=0.1/1 是有限剂量参照，不把它们预设成导数真值。
 
 不同小剂量的方向和幅度应在可分辨区间内趋于稳定。局部光滑时，一阶差分会有 O(alpha) 偏差；剂量缩小后若进入浮点误差主导区，不能继续机械缩小。
+
+每个 cell 分别要求连续两对相邻剂量（至少三个剂量点）满足 1-cos<=0.05、参数导数相对变化<=0.05；两端位移都需超过保守 float32 分辨率尺度的 100 倍。该尺度是工程启发式，不是测得的随机噪声或严格误差界。分开的通过区间不合并成一段；总体通过要求所有所请求 cell 各自通过。P 与 patient-matched-class h 分开报告，不由参数空间通过代替它们通过。
 
 若未找到稳定区，先记录“在当前剂量/精度下未解析局部导数”。检查初始状态、随机配对、激活非光滑点与精度后，再讨论敏感性。B0 失败不等于导数不存在，也不自动要求改 baseline。
 
@@ -178,6 +180,7 @@ $$
 - paired finite difference、primal、tangent 必须使用同一 batch 的 dropout realization，并保持下一 batch 的随机流不被额外诊断消耗。
 - 保留 coupled wd 与其导数，不能改成 AdamW。
 - 检查零梯度/零二阶矩坐标是否产生 NaN。不能为通过验收而改 epsilon 位置、平滑激活或替换模型；若使用稳定等价导数，需单独验证。
+- 加不存在病人的方向：初始 tangent 与直接注入均为零，参数与 moments 的 tangent 全程必须有限且逐位为零。它是零方向不变量测试，不能单独检验非零 Jacobian、dropout 流或 coupled-wd 导数；仍需非零方向有限差分、RNG/primal 对照和非零 moments/weight-decay 测试。
 - 每一步传递完整的数值 tangent，可释放已完成步骤的 autograd 图以控制内存。不能把 tangent 重新置零；若还要对最终 tangent 做更高阶求导，释放图的语义需另行讨论。
 
 先单 batch，再 1 epoch、5 epochs。含患者样本的 batch 才能检验直接注入项。每个窗口配相同窗口的 truth；将 25→50 的敏感性直接当作 0→50 的敏感性是错误的。
@@ -223,4 +226,4 @@ $$
 
 并行是计算调度选择，不改变验收顺序。B1 完整轨迹依赖短链验收；B2 依赖 Stage 1 导数验收。A 的正负结果均不能改写原 truth 或阻断 B 的有效局部验证。
 
-后续实现应先补齐 E0/B0 runner，再 B1 短链，最后 A 完整续训状态恢复与 B2。独立分支允许同时开发与排队，不要求等待另一分支完成。
+后续实现推进 B1 短链；根据 E0 安排 A 的完整状态恢复诊断，B2 接续通过验收的 Stage-1 轨迹导数。E0 代数闭合是必要检查，不是独立的 HVP 正确性证明；JVP 对照和有限差分梯度检查各有作用，单个差分步长跨越 ReLU/max-pool 分支不能宣布整个有限差分方法无效。
