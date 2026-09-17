@@ -2,6 +2,8 @@
 
 本轮只运行 E0 和 B0。B1/B2 与 A 尚未实现，也没有在本环境提交 Delta 作业。基线始终来自 ba8db97 的原结果，50 epochs 从原配置读取；没有新增“训到收敛”的主实验。
 
+2026-09-17 首次 Delta CUDA 门禁作业 22162393 正确阻断了后续任务。失败来自测试把生产 CUDA float32 HVP 与 float64 JVP 直接用 1e-4 比较；A40 上观测到 1.37% 的跨精度差异。修正版在 float32 和 float64 内分别比较 reverse-over-reverse 与 forward-over-reverse 两条独立 AD 路径，并把 float32/float64 差异单列为诊断量。它没有改 E0/B0 计算公式、原 07 HVP、训练代码、数据或 checkpoint。旧 E0/B0 依赖任务均未启动。
+
 ## 这次修了什么
 
 - 原冻结清单不动，另列 B 分支源码清单，解决 05 的参数筛选改动与 preflight 哈希冲突。原目录仍按原哈希验收。

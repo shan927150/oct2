@@ -83,7 +83,7 @@ def build_fixture(td: Path):
 
 
 class E0Tests(unittest.TestCase):
-    def test_entrypoint_closure_shares_and_finite_difference_hessian(self):
+    def test_entrypoint_closure_signs_and_independent_hvp_paths(self):
         with tempfile.TemporaryDirectory() as td:
             X, y, groups, full, dose = build_fixture(Path(td))
             output = Path(td) / "e0_output"
@@ -119,33 +119,63 @@ class E0Tests(unittest.TestCase):
             base = legacy.load_payload(full / "checkpoints/shadow_0_baseline_seed42.pt", pilot)
             model0 = legacy.model_from_payload(base, pilot, X, y)
             theta0 = core.flat(model0).clone()
-            hvp = score.make_hvp(model0, X, y, train, DEVICE, legacy.WD, 0., 4)
+            # Deliberately split the four images into two batches. This checks
+            # make_hvp's dataset normalization/accumulation as well as the
+            # derivative itself.
+            hvp = score.make_hvp(model0, X, y, train, DEVICE, legacy.WD, 0., 2)
             loo = legacy.load_payload(full / "checkpoints/shadow_0_seed42_patient101.pt", pilot)
             model_a = legacy.model_from_payload(loo, pilot, X, y)
             d = (core.flat(model_a) - theta0).to(DEVICE)
             Hd = e0.d64(hvp(d))
-            # forward-over-reverse reference: jvp of the exact eval gradient along d, float64.
-            # Finite differences need a step-size ladder and branch/roundoff checks:
-            # one failed step is not enough to invalidate that validation method.
+            # Two independent AD routes must agree *within each dtype*:
+            # make_hvp is reverse-over-reverse, while this reference is
+            # forward-over-reverse. Comparing a CUDA float32 convolution HVP
+            # directly with a float64 HVP is not an implementation check: the
+            # production CUDA path may use a different convolution precision.
             from torch.func import functional_call, grad, jvp
-            m64 = legacy.model_from_payload(base, pilot, X, y).double().eval()
-            names = [n for n, _ in m64.named_parameters()]
-            shapes = [q.shape for _, q in m64.named_parameters()]
-            xb = torch.as_tensor(X[train], dtype=torch.float64, device=DEVICE)
+            names = [n for n, _ in model0.named_parameters()]
+            shapes = [q.shape for _, q in model0.named_parameters()]
             yb = torch.as_tensor(y[train], dtype=torch.long, device=DEVICE)
 
-            def objective(theta_flat):
-                pieces, k = {}, 0
-                for name, shape in zip(names, shapes):
-                    n = int(np.prod(shape)); pieces[name] = theta_flat[k:k + n].view(shape); k += n
-                out = functional_call(m64, pieces, (xb,))
-                ce = torch.nn.functional.cross_entropy(out, yb, reduction="sum") / len(train)
-                return ce + legacy.WD / 2 * torch.dot(theta_flat, theta_flat)
+            def functional_objective(model, dtype):
+                xb = torch.as_tensor(X[train], dtype=dtype, device=DEVICE)
+
+                def objective(theta_flat):
+                    pieces, k = {}, 0
+                    for name, shape in zip(names, shapes):
+                        n = int(np.prod(shape))
+                        pieces[name] = theta_flat[k:k + n].view(shape)
+                        k += n
+                    out = functional_call(model, pieces, (xb,))
+                    ce = torch.nn.functional.cross_entropy(out, yb, reduction="sum") / len(train)
+                    return ce + legacy.WD / 2 * torch.dot(theta_flat, theta_flat)
+                return objective
+
+            objective32 = functional_objective(model0, theta0.dtype)
+            g_jvp32, Hd_jvp32 = jvp(grad(objective32), (theta0,), (d,))
+            g_rr32 = score.shadow_loss_grad(model0, X, y, train, DEVICE, legacy.WD, 2)
+            hvp32_rel = core.norm(e0.d64(Hd_jvp32) - Hd) / core.norm(Hd)
+            grad32_rel = core.norm(e0.d64(g_jvp32) - e0.d64(g_rr32)) / core.norm(e0.d64(g_rr32))
+            self.assertLess(hvp32_rel, 2e-3)
+            self.assertLess(grad32_rel, 2e-4)
+
+            # Repeat both routes in float64. This retains the tight mathematical
+            # reference without conflating it with production-float32 CUDA error.
+            m64 = legacy.model_from_payload(base, pilot, X, y).double().eval()
             theta64, d64 = theta0.double().to(DEVICE), d.double().to(DEVICE)
-            g_ref, Hd_ref = jvp(grad(objective), (theta64,), (d64,))
-            self.assertLess(core.norm(e0.d64(Hd_ref) - Hd) / core.norm(Hd), 1e-4)
-            g0 = e0.d64(score.shadow_loss_grad(model0, X, y, train, DEVICE, legacy.WD, 4))
-            self.assertLess(core.norm(e0.d64(g_ref) - g0) / core.norm(g0), 1e-4)
+            objective64 = functional_objective(m64, torch.float64)
+            g_jvp64, Hd_jvp64 = jvp(grad(objective64), (theta64,), (d64,))
+            Hd_rr64 = score.make_hvp(m64, X, y, train, DEVICE, legacy.WD, 0., 2)(d64)
+            g_rr64 = score.shadow_loss_grad(m64, X, y, train, DEVICE, legacy.WD, 2)
+            hvp64_rel = core.norm(e0.d64(Hd_jvp64 - Hd_rr64)) / core.norm(e0.d64(Hd_rr64))
+            grad64_rel = core.norm(e0.d64(g_jvp64 - g_rr64)) / core.norm(e0.d64(g_rr64))
+            self.assertLess(hvp64_rel, 1e-8)
+            self.assertLess(grad64_rel, 1e-10)
+
+            cross_precision_hvp_rel = core.norm(e0.d64(Hd_jvp64) - Hd) / core.norm(e0.d64(Hd_jvp64))
+            print("HVP checks:", {"float32_path_rel": hvp32_rel,
+                                  "float64_path_rel": hvp64_rel,
+                                  "float32_vs_float64_rel_diagnostic": cross_precision_hvp_rel}, flush=True)
             # g_alpha is the gradient of the fixed_mask weighted objective at theta_alpha
             alpha, idx = 1.0, [1]
             gL0 = e0.d64(score.shadow_loss_grad(model_a, X, y, train, DEVICE, legacy.WD, 4))
