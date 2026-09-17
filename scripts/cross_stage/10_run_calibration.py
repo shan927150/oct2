@@ -18,13 +18,25 @@ import sys
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 
+# Dose ladder: the condition name is the directory suffix, the value is --deletion_weight.
+# dose01/025/05 are the original v4.1 conditions and keep their exact meaning; the small
+# doses below were added for the Pathway2 B0 local-derivative probe and change nothing else.
+DOSE_CONDITIONS = {
+    "dose05": 0.5, "dose025": 0.25, "dose01": 0.1,
+    "dose003": 0.03, "dose001": 0.01, "dose0003": 0.003, "dose0001": 0.001,
+}
+
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--phase", choices=["tests", "smoke", "preflight", "baseline", "truth", "score", "stats"], required=True)
     ap.add_argument("--root", default="results/cross_stage_calibration_v4_1")
     ap.add_argument("--data_dir", default="./data")
-    ap.add_argument("--condition", choices=["full", "dose01", "dose025", "dose05", "early", "late"], default="full")
+    ap.add_argument("--condition", choices=list(DOSE_CONDITIONS) + ["full", "early", "late"], default="full")
+    ap.add_argument("--patients", type=int, nargs="*", default=None,
+                    help=("restrict the LOO loop to these patient ids from the frozen panel "
+                          "(B0 small-dose cells); the panel itself is unchanged, and baseline/"
+                          "no-op still cover the whole split"))
     ap.add_argument("--stage1_seeds", type=int, nargs="+", default=[42, 43, 44, 45, 46])
     ap.add_argument("--attack_seeds", type=int, nargs="+", default=[5101, 5102, 5103, 5104, 5105])
     ap.add_argument("--n_total_samples", type=int, default=40000)
@@ -127,8 +139,10 @@ def main():
               "--window_membership", "value_only", "--shadow_epochs", args.shadow_epochs,
               "--attack_epochs", args.attack_epochs, "--seeds", *args.stage1_seeds,
               "--attack_seeds", *args.attack_seeds, "--save_epoch_checkpoints", args.shadow_epochs//2, args.shadow_epochs]
-    if args.condition.startswith("dose"):
-        common += ["--deletion_weight", {"dose01": .1, "dose025": .25, "dose05": .5}[args.condition]]
+    if args.condition in DOSE_CONDITIONS:
+        common += ["--deletion_weight", DOSE_CONDITIONS[args.condition]]
+    if args.patients:
+        common += ["--loo_patients", *args.patients]
     elif args.condition in ("early", "late"):
         mid = args.shadow_epochs//2
         common += ["--removal_epochs", f"0:{mid}" if args.condition == "early" else f"{mid}:{args.shadow_epochs}"]

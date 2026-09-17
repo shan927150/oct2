@@ -164,6 +164,11 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--deletion_weight", type=float, default=1.0,
                     help=("fixed_mask only: fraction alpha removed; per-example loss weight becomes "
                           "1-alpha.  1.0 = full deletion; 0.1/0.25/0.5 give the dose-response ladder."))
+    ap.add_argument("--loo_patients", type=int, nargs="+", default=None,
+                    help=("restrict the LOO loop to these patient ids.  The frozen panel, split, "
+                          "baseline training and no-op replay are unchanged: this only skips the "
+                          "per-patient retraining of patients outside the list, so a small-dose "
+                          "probe costs 2 patients instead of 8.  Every id must be in the panel."))
     ap.add_argument("--window_membership", choices=["value_only", "relabel"], default="value_only",
                     help=("for partial --removal_epochs runs: value_only (default) evaluates only "
                           "J00/J10 because a partially exposed patient has no binary membership "
@@ -1591,6 +1596,24 @@ def main() -> None:
         patient for patient in candidates
         if int(patient["oct_class"]) in loo_classes
     ]
+    if args.loo_patients is not None:
+        requested = list(dict.fromkeys(int(p) for p in args.loo_patients))
+        panel_ids = {int(patient["patient_id"]) for patient in candidates}
+        missing = [pid for pid in requested if pid not in panel_ids]
+        if missing:
+            raise ValueError(
+                f"--loo_patients {missing} are not in the frozen panel {sorted(panel_ids)}; "
+                "the panel is never re-selected to match a request")
+        dropped = [pid for pid in requested
+                   if pid not in {int(p["patient_id"]) for p in eligible_candidates}]
+        if dropped:
+            raise RuntimeError(
+                f"--loo_patients {dropped} belong to classes the attack gate did not qualify "
+                f"({loo_classes} qualified); do not silently substitute another patient")
+        eligible_candidates = [patient for patient in eligible_candidates
+                               if int(patient["patient_id"]) in set(requested)]
+        LOGGER.info("LOO restricted to patients %s of the %d-patient frozen panel",
+                    requested, len(candidates))
     all_results: List[Mapping[str, object]] = []
     for seed in args.seeds:
         context = baseline_contexts[seed]
@@ -1687,6 +1710,10 @@ def main() -> None:
         "n_patient_seed_runs": len(all_results),
         "n_selected_patients": len(candidates),
         "n_loo_patients": len(eligible_candidates),
+        "loo_patients_restricted_to": (
+            sorted(int(p["patient_id"]) for p in eligible_candidates)
+            if args.loo_patients is not None else None),
+        "covers_full_panel": args.loo_patients is None,
         "qualified_classes": loo_classes,
         "skipped_classes": skipped_classes if args.enforce_attack_gate else [],
         "attack_gate": gate_summary,
