@@ -1,0 +1,173 @@
+{
+  "schema": "oct_pathway2_plan_v1",
+  "base_commit": "ba8db97887e18ea1bbf33f67b04d6eba69f47b70",
+  "status": "protocol_and_preflight_only",
+  "gpu_runners_implemented": false,
+  "gpu_jobs_submitted": 0,
+  "global_gpu_limit_design": 4,
+  "core_panel": {
+    "seeds": [
+      42,
+      43
+    ],
+    "patients": [
+      807,
+      2085
+    ]
+  },
+  "signal_monitor_patients": [
+    807,
+    1369,
+    897,
+    855,
+    2085,
+    1858,
+    1814,
+    2023
+  ],
+  "frozen_contract": "frozen_baseline.json",
+  "raw_dataset_snapshot_required_on_delta": true,
+  "default_resource_proposal": {
+    "gpus_per_job": 1,
+    "cpus_per_task": 8,
+    "mem_gb": 64,
+    "partition": "gpuA40x4",
+    "walltime": "measure_smoke_then_choose_budget"
+  },
+  "input_policy": {
+    "original_files": "read_only",
+    "before_and_after_sha256": true,
+    "overwrite_original": false,
+    "new_run_directory_exclusive": true
+  },
+  "scientific_endpoint": "patient_matched_class_CE_J10_minus_J00",
+  "steps_vs_epochs": "Original Stage 1: 50 epochs, 16 batches/epoch; window truths must match window derivatives",
+  "role": "B",
+  "branch": "exp/pathway2-b-trajectory",
+  "output_root_suffix": "oct2-pathway2-runs/B",
+  "tasks": [
+    {
+      "id": "E0",
+      "status": "planned_not_implemented",
+      "seeds": [
+        42,
+        43
+      ],
+      "patients": [
+        807,
+        2085
+      ],
+      "alphas": [
+        1,
+        0.1
+      ],
+      "n_core_conditions": 8,
+      "new_training_runs": 0,
+      "shared_result": "read-only by A",
+      "measurement": "paired_gradient_residual_vs_Taylor_remainder; frozen_source_eval_objective; signal_monitor_all_eight"
+    },
+    {
+      "id": "B0",
+      "status": "planned_not_implemented",
+      "array_indices": [
+        0,
+        1
+      ],
+      "array_max_concurrent": 2,
+      "seed_by_task": {
+        "0": 42,
+        "1": 43
+      },
+      "patients": [
+        807,
+        2085
+      ],
+      "alphas": [
+        0.01,
+        0.003,
+        0.001
+      ],
+      "n_perturbation_runs": 12,
+      "n_baseline_noop_runs": 2,
+      "total_training_runs": 14,
+      "epochs_source": "frozen_baseline.settings.shadow_epochs",
+      "full_window": true,
+      "entrypoint": null,
+      "measurements": [
+        "D_alpha_theta",
+        "D_alpha_prediction",
+        "fixed_original_h_projection",
+        "effective_float_loss_weight",
+        "no_op_bitwise_parameters_and_rng"
+      ],
+      "elapsed_time_estimate": null
+    },
+    {
+      "id": "B1-smoke",
+      "status": "planned_not_implemented",
+      "seed": 42,
+      "patient": 807,
+      "windows": [
+        "one_batch_containing_patient",
+        "one_epoch",
+        "five_epochs"
+      ],
+      "method": "forward_state_tangent",
+      "primal_state": [
+        "theta",
+        "adam_m",
+        "adam_v",
+        "step"
+      ],
+      "paired_window_truth_required": true,
+      "advancement_gates": [
+        "primal_matches_original",
+        "rng_stream_matches",
+        "finite_difference_resolved_and_matches",
+        "zero_moment_coordinates_finite"
+      ],
+      "scientific_dependencies": []
+    },
+    {
+      "id": "B1-full",
+      "status": "planned_not_implemented",
+      "seeds": [
+        42,
+        43
+      ],
+      "patients": [
+        807,
+        2085
+      ],
+      "n_full_trajectory_directions": 4,
+      "requires": [
+        "B1-smoke passed",
+        "resolved local finite-difference comparison"
+      ],
+      "epochs": 50,
+      "steps": 800
+    },
+    {
+      "id": "B2",
+      "status": "planned_not_implemented",
+      "attack_seeds": [
+        5101,
+        5102,
+        5103,
+        5104,
+        5105
+      ],
+      "attack_epochs_source": "frozen_baseline.settings.attack_epochs",
+      "requires": [
+        "B1-full passed",
+        "Stage 2 primal and directional-derivative gates passed"
+      ],
+      "formula": "Stage 2 Eq42 + Stage 1 Eq74",
+      "final_validation_alphas": [
+        0.1,
+        1
+      ],
+      "hybrid_label_if_stage2_implicit": "Stage-1 trajectory + Stage-2 implicit"
+    }
+  ]
+}
