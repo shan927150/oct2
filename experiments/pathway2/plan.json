@@ -1,0 +1,104 @@
+{
+  "schema": "oct_pathway2_plan_v1",
+  "base_commit": "ba8db97887e18ea1bbf33f67b04d6eba69f47b70",
+  "status": "protocol_and_preflight_only",
+  "gpu_runners_implemented": false,
+  "gpu_jobs_submitted": 0,
+  "global_gpu_limit_design": 4,
+  "core_panel": {
+    "seeds": [
+      42,
+      43
+    ],
+    "patients": [
+      807,
+      2085
+    ]
+  },
+  "signal_monitor_patients": [
+    807,
+    1369,
+    897,
+    855,
+    2085,
+    1858,
+    1814,
+    2023
+  ],
+  "frozen_contract": "frozen_baseline.json",
+  "raw_dataset_snapshot_required_on_delta": true,
+  "default_resource_proposal": {
+    "gpus_per_job": 1,
+    "cpus_per_task": 8,
+    "mem_gb": 64,
+    "partition": "gpuA40x4",
+    "walltime": "measure_smoke_then_choose_budget"
+  },
+  "input_policy": {
+    "original_files": "read_only",
+    "before_and_after_sha256": true,
+    "overwrite_original": false,
+    "new_run_directory_exclusive": true
+  },
+  "scientific_endpoint": "patient_matched_class_CE_J10_minus_J00",
+  "steps_vs_epochs": "Original Stage 1: 50 epochs, 16 batches/epoch; window truths must match window derivatives",
+  "role": "A",
+  "branch": "exp/pathway2-a-stationarity",
+  "output_root_suffix": "oct2-pathway2-runs/A",
+  "tasks": [
+    {
+      "id": "A-pilot",
+      "status": "planned_not_implemented",
+      "seed": 42,
+      "patient": 807,
+      "original_states": [
+        "baseline",
+        "full",
+        "dose01"
+      ],
+      "state_recovery": "Replay LOO from original initialization if full Adam/RNG state unavailable; verify each final model/RNG against that condition, then save state in A output only.",
+      "arms": [
+        {
+          "id": "constant_lr",
+          "extra_epochs": 25,
+          "lr_schedule": [
+            {
+              "start_extra_epoch": 0,
+              "end_extra_epoch": 25,
+              "lr": 0.001
+            }
+          ]
+        },
+        {
+          "id": "decay_lr",
+          "extra_epochs": 25,
+          "lr_schedule": [
+            {
+              "start_extra_epoch": 0,
+              "end_extra_epoch": 10,
+              "lr": 0.0001
+            },
+            {
+              "start_extra_epoch": 10,
+              "end_extra_epoch": 25,
+              "lr": 0.00001
+            }
+          ]
+        }
+      ],
+      "measure_at_extra_epochs": [
+        0,
+        5,
+        10,
+        25
+      ],
+      "n_continuations": 6,
+      "n_original_loo_replays_if_states_missing": 2,
+      "signal_panel": "original_eight_patients_at_each_baseline_anchor",
+      "h_measurement": "original and final new baseline anchors; retrain/recompute Stage 2 per new interface; otherwise mark h_new unavailable",
+      "scientific_dependencies": [],
+      "resource_dependency": "afterany:E0_job to keep first-wave maximum at four GPUs",
+      "forbidden_conclusion": "An unsuccessful A pilot rejects all static influence methods"
+    }
+  ]
+}
