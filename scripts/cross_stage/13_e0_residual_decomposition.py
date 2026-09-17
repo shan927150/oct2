@@ -80,11 +80,70 @@ def parse_args():
     p.add_argument("--dropout_mc_reps", type=int, default=16,
                    help="dropout-mode MC replicates for g_0 and b_p (0 = eval only)")
     p.add_argument("--mc_seed", type=int, default=910000)
+    p.add_argument("--allow_tf32", action=argparse.BooleanOptionalAction, default=False,
+                   help=("TF32 keeps 10 mantissa bits (~1e-3 relative) and torch defaults "
+                         "cudnn.allow_tf32 to True on Ampere, which no script in this project ever "
+                         "pinned.  E0 pins it OFF so Hbar*d is a float32 result rather than a TF32 "
+                         "one; --allow-tf32 reproduces the historical regime for comparison."))
     p.add_argument("--require_cuda", action="store_true")
     args = p.parse_args()
     if args.hvp_batch < 1 or args.dropout_mc_reps < 0 or any(g < 0 for g in args.gammas):
         raise ValueError("hvp_batch >= 1, dropout_mc_reps >= 0, gammas >= 0")
     return args
+
+
+def set_tf32(enabled: bool) -> dict:
+    """Pin both TF32 switches and report what is actually in force afterwards."""
+    torch.backends.cuda.matmul.allow_tf32 = bool(enabled)
+    torch.backends.cudnn.allow_tf32 = bool(enabled)
+    return {"requested": bool(enabled),
+            "cuda_matmul_allow_tf32": bool(torch.backends.cuda.matmul.allow_tf32),
+            "cudnn_allow_tf32": bool(torch.backends.cudnn.allow_tf32),
+            "note": ("torch.use_deterministic_algorithms does not control TF32, so before this "
+                     "script every CUDA HVP in the project ran at the Ampere default (on).")}
+
+
+def hvp_precision_probe(args, score, model, X, y, train, device, wd, direction):
+    """Measure the HVP's own numerical floor along one fixed unit direction.
+
+    Same operator, three ways: the pinned setting, the opposite TF32 setting, and
+    float64.  The TF32 gap is the precision that every earlier HVP-based result in
+    this project (07's CG, v1.1's Krylov) was computed at.  Costs two extra HVPs.
+    """
+    if not torch.cuda.is_available():
+        return {"measured": False, "reason": "CPU run: TF32 does not apply"}
+    norm = torch.linalg.vector_norm(direction)
+    if not float(norm):
+        return {"measured": False, "reason": "zero probe direction"}
+    v = direction / norm
+    out = {"measured": True, "probe": "unit vector along grad L_0(theta_0)",
+           "pinned_allow_tf32": bool(args.allow_tf32)}
+    pinned = d64(score.make_hvp(model, X, y, train, device, wd, 0.0, args.hvp_batch)(v))
+    out["Hv_norm_pinned"] = core.norm(pinned)
+    try:
+        set_tf32(not args.allow_tf32)
+        flipped = d64(score.make_hvp(model, X, y, train, device, wd, 0.0, args.hvp_batch)(v))
+    finally:
+        set_tf32(args.allow_tf32)
+    out["tf32_flip_relative_difference"] = safe_div(core.norm(flipped - pinned), core.norm(pinned))
+    out["tf32_flip_cosine"] = cos(flipped, pinned)
+    try:
+        model.double()
+        exact = d64(score.make_hvp(model, X, y, train, device, wd, 0.0, args.hvp_batch)(v.double()))
+        out["float64_relative_difference"] = safe_div(core.norm(exact - pinned), core.norm(exact))
+    except (RuntimeError, TypeError) as exc:
+        out["float64_relative_difference"] = None
+        out["float64_error"] = repr(exc)
+    finally:
+        model.float()
+    out["interpretation"] = (
+        "tf32_flip_relative_difference is how much TF32 alone moves this Hessian-vector product. "
+        "Compare it with the CG/Krylov residual tolerances used earlier (07 cg_fail_tol=1e-3, "
+        "v1.1 residual_tol=1e-3): a solver tolerance below the operator's own floor was measuring "
+        "arithmetic noise, not convergence.")
+    LOG.info("HVP precision floor: tf32_flip=%s float32_vs_float64=%s",
+             out["tf32_flip_relative_difference"], out.get("float64_relative_difference"))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +252,7 @@ def run_seed(args, context, legacy, score, pilot, seed, core_patients, monitor_p
     g0_dev = score.shadow_loss_grad(model0, X, y, train, device, WD, args.hvp_batch)
     g0 = d64(g0_dev)
     hvp = score.make_hvp(model0, X, y, train, device, WD, 0.0, args.hvp_batch)
+    precision = hvp_precision_probe(args, score, model0, X, y, train, device, WD, g0_dev)
     LOG.info("seed=%d ||g_0||=%.4g (eval, %.1fs)", seed, core.norm(g0), time.time() - t0)
     g0_mc, g0_mc_spread, g0_mc_se = mc_mean_gradient(model0, X, y, train, args.hvp_batch, WD,
                                                      args.dropout_mc_reps, args.mc_seed)
@@ -203,6 +263,7 @@ def run_seed(args, context, legacy, score, pilot, seed, core_patients, monitor_p
         "g0_dropout_mc_rms_spread": g0_mc_spread, "g0_dropout_mc_mean_se_estimate": g0_mc_se,
         "cos_g0_eval_mc": cos(g0, g0_mc) if g0_mc is not None else None,
         "dropout_mc_reps": args.dropout_mc_reps,
+        "hvp_precision_floor": precision,
     }
 
     # ---- signal monitor at theta_0 for the whole requested panel
@@ -317,9 +378,10 @@ def main():
         commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=HERE, text=True).strip()
     except (subprocess.CalledProcessError, FileNotFoundError):
         commit = None
+    tf32 = set_tf32(args.allow_tf32)
     manifest = {"schema": SCHEMA, "status": "running", "args": vars(args), "python": platform.python_version(),
                 "torch": torch.__version__, "cuda": torch.version.cuda, "device": str(pilot.DEVICE),
-                "git_commit": commit, "source_sha256": source_hashes,
+                "git_commit": commit, "source_sha256": source_hashes, "tf32": tf32,
                 "objective": "eval-mode mean CE + wd/2||theta||^2; L_alpha = L_0 - alpha L_patient (fixed_mask, N fixed)",
                 "identity": "(Hbar+gamma I)d - alpha b0 = (g_alpha - g_0) - R_alpha + gamma d",
                 "interpretation": ("Norms of the two terms are not additive causal shares; signed shares along the "

@@ -151,13 +151,34 @@ class E0Tests(unittest.TestCase):
                     return ce + legacy.WD / 2 * torch.dot(theta_flat, theta_flat)
                 return objective
 
+            # Both float32 routes, with TF32 pinned OFF exactly as E0 pins it. TF32 keeps only
+            # 10 mantissa bits and applies per kernel, so reverse-over-reverse and
+            # forward-over-reverse select different convolution algorithms and disagree at the
+            # ~1e-2 level on the SECOND derivative while the first still agrees to ~1e-4. That
+            # is a property of the arithmetic, not of the implementation, so the gate runs with
+            # TF32 off and the TF32-on value is recorded as a diagnostic instead.
             objective32 = functional_objective(model0, theta0.dtype)
-            g_jvp32, Hd_jvp32 = jvp(grad(objective32), (theta0,), (d,))
-            g_rr32 = score.shadow_loss_grad(model0, X, y, train, DEVICE, legacy.WD, 2)
-            hvp32_rel = core.norm(e0.d64(Hd_jvp32) - Hd) / core.norm(Hd)
-            grad32_rel = core.norm(e0.d64(g_jvp32) - e0.d64(g_rr32)) / core.norm(e0.d64(g_rr32))
+
+            def float32_routes():
+                g_jvp, Hd_jvp = jvp(grad(objective32), (theta0,), (d,))
+                Hd_rr = score.make_hvp(model0, X, y, train, DEVICE, legacy.WD, 0., 2)(d)
+                g_rr = score.shadow_loss_grad(model0, X, y, train, DEVICE, legacy.WD, 2)
+                return (core.norm(e0.d64(Hd_jvp) - e0.d64(Hd_rr)) / core.norm(e0.d64(Hd_rr)),
+                        core.norm(e0.d64(g_jvp) - e0.d64(g_rr)) / core.norm(e0.d64(g_rr)))
+
+            e0.set_tf32(False)
+            hvp32_rel, grad32_rel = float32_routes()
+            tf32_on = None
+            if torch.cuda.is_available():
+                e0.set_tf32(True)
+                tf32_on = float32_routes()
+                e0.set_tf32(False)
             self.assertLess(hvp32_rel, 2e-3)
             self.assertLess(grad32_rel, 2e-4)
+            # E0 itself must have pinned TF32 off; otherwise Hbar*d in e0_rows.csv is a TF32 result.
+            self.assertFalse(manifest["tf32"]["cudnn_allow_tf32"])
+            self.assertFalse(manifest["tf32"]["cuda_matmul_allow_tf32"])
+            self.assertIn("hvp_precision_floor", payload["seeds"][0])
 
             # Repeat both routes in float64. This retains the tight mathematical
             # reference without conflating it with production-float32 CUDA error.
@@ -173,9 +194,13 @@ class E0Tests(unittest.TestCase):
             self.assertLess(grad64_rel, 1e-10)
 
             cross_precision_hvp_rel = core.norm(e0.d64(Hd_jvp64) - Hd) / core.norm(e0.d64(Hd_jvp64))
-            print("HVP checks:", {"float32_path_rel": hvp32_rel,
+            print("HVP checks:", {"float32_path_rel_tf32_off": hvp32_rel,
+                                  "float32_path_rel_tf32_on": tf32_on[0] if tf32_on else None,
+                                  "grad32_rel_tf32_off": grad32_rel,
+                                  "grad32_rel_tf32_on": tf32_on[1] if tf32_on else None,
                                   "float64_path_rel": hvp64_rel,
-                                  "float32_vs_float64_rel_diagnostic": cross_precision_hvp_rel}, flush=True)
+                                  "float32_vs_float64_rel_diagnostic": cross_precision_hvp_rel},
+                  flush=True)
             # g_alpha is the gradient of the fixed_mask weighted objective at theta_alpha
             alpha, idx = 1.0, [1]
             gL0 = e0.d64(score.shadow_loss_grad(model_a, X, y, train, DEVICE, legacy.WD, 4))

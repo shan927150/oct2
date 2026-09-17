@@ -99,3 +99,38 @@ git -C "$HOME/oct2-exp-b" worktree add -b exp/pathway2-b1-smoke "$HOME/oct2-b1-s
 ```
 
 该工作树用于开发；本轮提交脚本仍只从 `exp/pathway2-b-trajectory` 运行。A 保持可选机制诊断，B2 必须同时接入 Stage-2 式 (42) 才是严格有限轨迹版。
+
+## TF32：为什么门禁作业 22162393 / 22162577 会失败
+
+`cudnn.allow_tf32` 在 Ampere 上默认 **True**，`torch.use_deterministic_algorithms` 不管它，
+本项目此前没有任何脚本设置过它。TF32 只保留 10 位尾数（相对精度 ~1e-3），且是**逐 kernel 生效**的。
+
+后果：reverse-over-reverse（`make_hvp` 的双重反传）与 forward-over-reverse（`torch.func.jvp`）
+会选到不同的卷积算法，于是**同一个 float32 HVP 在两条 AD 路径上相差 ~1e-2**，而一阶梯度
+仍然一致到 ~1e-4——因为一阶只过一次 kernel。这正是 22162577 观察到的
+`hvp32_rel = 0.0124` 而 `grad32_rel` 通过的形态。
+
+对照：同样两条路径在 CPU（无 TF32）上相差 **3.4e-7**。
+
+处理：
+
+- `13_e0_residual_decomposition.py` 新增 `--allow_tf32`，**默认关闭**，并把实际生效的两个开关写进
+  `manifest.json` 的 `tf32` 字段。
+- E0 每个 seed 额外做两次 HVP，测出这个算子自己的精度地板，写进
+  `e0_rows.json` 的 `seeds[].hvp_precision_floor`：
+  - `tf32_flip_relative_difference`：TF32 开/关对同一个 `H*v` 的相对影响
+  - `float64_relative_difference`：float32 相对 float64 的残差
+- 测试把两条 float32 路径的门禁放在 **TF32 关闭**下（保持 2e-3），TF32 打开的值只打印不判定，
+  并断言 E0 确实把 TF32 钉住了。
+
+**训练侧不动。** `14_b0_train.py` 依赖对原始 baseline 的逐位重放门禁；原始训练是在 TF32 默认开启
+下跑的，改动会让重放失败。B0 因此继续继承默认值，由重放门禁保证一致。
+
+### 一个需要在 E0 结果里确认的问题
+
+07 的 `cg_fail_tol=1e-3` 与 v1.1 的 `residual_tol=1e-3`，都**小于**上面这个算子精度地板的量级。
+如果 E0 在真实模型上测出的 `tf32_flip_relative_difference` 也在 1e-2 附近，那么之前那些
+"CG 干净收敛到 8e-5" 的说法，收敛到的精度比算子本身的精度还细——测的是算术噪声而不是解。
+
+这**不会改变**已有的主结论（反向残差 69–894、$R_\alpha\approx9$ 都比这个地板大好几个量级），
+但会改变"数值合格"这个词的含义，届时应据实重述 v1.1 的数值资格口径。
