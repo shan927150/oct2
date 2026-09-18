@@ -1,27 +1,27 @@
 #!/bin/bash
-#SBATCH --job-name=oct_A_test
+#SBATCH --job-name=oct_A2_test
 #SBATCH --partition=gpuA40x4
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=16G
-#SBATCH --time=00:30:00
+#SBATCH --mem=24G
+#SBATCH --time=00:45:00
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
+
 set -euo pipefail
 cd "${PROJECT_DIR:-${SLURM_SUBMIT_DIR:-$PWD}}"
-test -f src/config.py
-: "${OCT_A_CODE:?submit through submit_A_step1.sh}"
+: "${OCT_A_STEP2_ROOT:?}"; : "${OCT_A_CODE:?}"
 test "$(git rev-parse HEAD)" = "$OCT_A_CODE"
 test -z "$(git status --porcelain --untracked-files=no)"
+python3 scripts/cross_stage/21_A_step2_control.py job-check --root "$OCT_A_STEP2_ROOT" --action test
 module reset
 module load pytorch-conda/2.8
-export PYTHONUNBUFFERED=1
-export CUBLAS_WORKSPACE_CONFIG=:4096:8
+export PYTHONUNBUFFERED=1 CUBLAS_WORKSPACE_CONFIG=:4096:8
+export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}" MKL_NUM_THREADS="${SLURM_CPUS_PER_TASK:-4}"
 export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
-export STAGE1_DIAG_REQUIRE_CUDA=1
-srun --unbuffered python scripts/cross_stage/tests/test_A_convergence.py
 srun --unbuffered python scripts/cross_stage/tests/test_A_control_plane.py
-srun --unbuffered python scripts/cross_stage/tests/test_stage1_v11.py
-echo A_GPU_TESTS_PASSED
+srun --unbuffered python scripts/cross_stage/tests/run_A_step2_chain.py \
+  --output_dir "$OCT_A_STEP2_ROOT/step2_gpu_smoke"
+echo A_STEP2_GPU_TESTS_PASSED

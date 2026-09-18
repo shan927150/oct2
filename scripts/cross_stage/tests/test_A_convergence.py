@@ -86,7 +86,7 @@ def build_fixture(td, T0=2, target_lr=None, baseline_lr=None):
 def run_main(fx, out_root, *extra):
     argv = ["--full_dir", str(fx["full"]), "--data_dir", "unused", "--out_root", str(out_root),
             "--epochs", "4", "--lanczos_iters", "3", "--probe_seeds", "17", "--hvp_batch", "4",
-            "--eval_batch", "5", *extra]
+            "--eval_batch", "5", "--gradient_every", "1", *extra]
     with mock.patch.object(legacy, "module_from_path", return_value=score), \
          mock.patch.object(score, "import_pilot_module", return_value=pilot), \
          mock.patch.object(pilot, "load_dataset", return_value=(fx["X"], fx["y"], fx["groups"])):
@@ -104,13 +104,14 @@ class ConvergenceCurveTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             fx = build_fixture(td)
             out_root = Path(td) / "runs" / "A" / "conv"
-            run_main(fx, out_root, "--array_index", "0")
+            run_main(fx, out_root, "--array_index", "0", "--spectrum_epochs", "2", "4",
+                     "--dropout_mc_every", "2", "--dropout_mc_reps", "2")
             out = out_root / "shadow0_seed42"
             manifest = legacy.read_json(out / "manifest.json")
             self.assertEqual(manifest["status"], "complete")
             self.assertTrue(manifest["replay_exact"])
             self.assertTrue(manifest["input_files_unchanged"])
-            self.assertEqual(manifest["all_runs"], ["shadow0_seed42", "target", "shadow1_fixed"])
+            self.assertEqual(manifest["all_runs"], ["shadow0_seed42"])
             kinds = [(c["kind"], c["epoch"]) for c in manifest["replay_checks"]]
             self.assertEqual(kinds, [("original_epoch_checkpoint", 1), ("original_epoch_checkpoint", 2),
                                      ("original_final_model", 2)])
@@ -140,18 +141,14 @@ class ConvergenceCurveTests(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 run_main(fx, out_root, "--array_index", "0")
 
-    def test_fixed_model_mismatch_is_recorded_and_affected_mismatch_fails(self):
+    def test_every_replay_mismatch_fails(self):
         with tempfile.TemporaryDirectory() as td:
             fx = build_fixture(td, target_lr=3e-3)   # reference target trained with another recipe
             out_root = Path(td) / "runs" / "A" / "conv"
-            run_main(fx, out_root, "--run", "target")
-            manifest = legacy.read_json(out_root / "target/manifest.json")
-            self.assertEqual(manifest["status"], "complete")
-            self.assertFalse(manifest["replay_exact"])
-            run_main(fx, out_root, "--run", "shadow1_fixed")
-            self.assertTrue(legacy.read_json(out_root / "shadow1_fixed/manifest.json")["replay_exact"])
             with self.assertRaises(RuntimeError):
-                run_main(fx, Path(td) / "runs" / "A" / "strict", "--run", "target", "--strict_all")
+                run_main(fx, out_root, "--run", "target", "--include_secondary")
+            manifest = legacy.read_json(out_root / "target/manifest.json")
+            self.assertEqual(manifest["status"], "failed")
         with tempfile.TemporaryDirectory() as td:
             fx = build_fixture(td, baseline_lr=3e-3)
             out_root = Path(td) / "runs" / "A" / "conv"
@@ -164,6 +161,9 @@ class ConvergenceCurveTests(unittest.TestCase):
             fx = build_fixture(td)
             with self.assertRaises(RuntimeError):
                 run_main(fx, fx["full"] / "extension", "--array_index", "0")
+
+
+FAKE_NAMES = [f"shadow3_seed{seed}" for seed in range(42, 47)]
 
 
 def fake_run(root, name, role, seed, ce_by_epoch, T0=50, E=100, grad=0.3):
@@ -181,46 +181,38 @@ def fake_run(root, name, role, seed, ce_by_epoch, T0=50, E=100, grad=0.3):
         writer = csv.DictWriter(f, fieldnames=list(rows[0]))
         writer.writeheader()
         writer.writerows(rows)
+    source = {"scripts/cross_stage/20_A_convergence_curve.py": "same-source"}
+    args = {"epochs": E, "checkpoint_epochs": list(range(50, E + 1, 5)),
+            "gradient_every": 5, "dropout_mc_every": 25, "dropout_mc_reps": 16,
+            "hvp_batch": 64, "eval_batch": 256, "spectrum_epochs": []}
     (folder / "manifest.json").write_text(json.dumps({
         "schema": report.SCHEMA, "status": "complete", "run": name, "role": role, "seed": seed,
-        "all_runs": ["shadow3_seed42", "shadow3_seed43", "target"], "original_epochs": T0,
-        "extended_epochs": E, "replay_exact": True}))
+        "all_runs": FAKE_NAMES, "original_epochs": T0, "extended_epochs": E,
+        "git_commit": "fake-commit", "source_sha256": source, "args": args,
+        "replay_exact": True, "input_files_unchanged": True,
+        "source_files_unchanged": True, "dataset_arrays_unchanged": True}))
+    (folder / "dataset_fingerprint.json").write_text(json.dumps(
+        {"X_shape": [10, 1], "X_dtype": "float32", "X_sha256": "x", "y_sha256": "y"}))
+    (folder / "input_sha256.json").write_text(json.dumps({"/frozen/common.json": "same-input"}))
 
 
-class PlateauReportTests(unittest.TestCase):
-    def test_plateau_rule(self):
-        flat_after_60 = {k: (1. / k if k <= 60 else 1. / 60 * (1 - .01 * (k - 60) / 10)) for k in range(10, 101, 10)}
-        start, _ = report.plateau_start(flat_after_60, 50, 100, 10, .10, 1e-9)
-        self.assertEqual(start, 60)
-        steady_decline = {k: .7 ** (k / 10) for k in range(10, 101, 10)}
-        self.assertIsNone(report.plateau_start(steady_decline, 50, 100, 10, .10, 1e-9)[0])
-        # One flat pair at the very end is not enough evidence.
-        late = {**steady_decline, 100: steady_decline[90]}
-        self.assertIsNone(report.plateau_start(late, 50, 100, 10, .10, 1e-9)[0])
-        # A window difference inside 2 standard errors of minibatch noise counts as flat.
-        noisy = {k: (1. if k < 60 else (.5 if (k // 10) % 2 else .6)) for k in range(10, 101, 10)}
-        self.assertIsNone(report.plateau_start(noisy, 50, 100, 10, .10, 1e-9)[0])
-        self.assertEqual(report.plateau_start(noisy, 50, 100, 10, .10, 1e-9,
-                                              se={k: .05 for k in noisy})[0], 60)
-        # Absolute tolerance lets a near-zero loss count as flat.
-        tiny = {k: .001 * .5 ** (k / 10) for k in range(10, 101, 10)}
-        self.assertEqual(report.plateau_start(tiny, 50, 100, 10, .10, .002)[0], 50)
-
+class DescriptiveReportTests(unittest.TestCase):
     def test_report_end_to_end(self):
         with tempfile.TemporaryDirectory() as td:
-            fake_run(td, "shadow3_seed42", "affected_shadow", 42, lambda e: max(.02, .6 * .9 ** e))
-            fake_run(td, "shadow3_seed43", "affected_shadow", 43,
-                     lambda e: .02 + (.05 * (1 - (e - 50) / 10) if 50 <= e <= 60 else (.05 if e < 50 else 0)))
-            fake_run(td, "target", "target", 42007, lambda e: .03)
+            for seed in range(42, 47):
+                fake_run(td, f"shadow3_seed{seed}", "affected_shadow", seed,
+                         lambda e, offset=seed-42: .02 + .5 * (.92 ** e) + offset * 1e-4)
             report.main(["--root", td])
             summary = json.loads((Path(td) / "report/plateau_report.json").read_text())
-            self.assertEqual(summary["runs"]["shadow3_seed42"]["plateau_start_online_ce"], 50)
-            self.assertEqual(summary["runs"]["shadow3_seed43"]["plateau_start_online_ce"], 70)
-            self.assertEqual(summary["suggested_E_star"], 70)
-            self.assertTrue(summary["fixed_models_flat_by_E_star"]["target"])
-            for name in ("curves_affected_shadow.png", "curves_target_and_fixed_shadows.png",
-                         "REPORT.md", "window_table.csv"):
+            self.assertEqual(summary["selection_status"], "not_frozen")
+            self.assertIsNone(summary["selected_E_star"])
+            self.assertNotIn("suggested_E_star", summary)
+            table = report.read_csv(Path(td) / "report/window_table.csv")
+            self.assertTrue(any(r["online_train_ce_slope_per_epoch"] is not None for r in table))
+            for name in ("curves_affected_shadow.png", "REPORT.md", "window_table.csv"):
                 self.assertTrue((Path(td) / "report" / name).is_file(), name)
+            self.assertFalse((Path(td) / "report/curves_target_and_fixed_shadows.png").exists())
+            self.assertIn("E* is not selected", (Path(td) / "report/REPORT.md").read_text())
 
     def test_report_refuses_incomplete_panel(self):
         with tempfile.TemporaryDirectory() as td:

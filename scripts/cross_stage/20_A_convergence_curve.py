@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Route A, meeting 2026-09-18, step 1: train each Stage 1 model longer and log every epoch.
+"""Route A, meeting 2026-09-18, step 1: extend the five affected-shadow baselines.
 
 Question: after how many epochs does every Stage 1 training curve flatten, and
 does "flat loss" coincide with the Eq. 56 premise, i.e. a small full-batch
 gradient of the eval objective whose Hessian the static formula inverts?
 
-Scope: descriptive curves plus Hessian Ritz endpoints at saved epochs.  No
-patient deletion, no attack training, no truth replacement.  The original
-50-epoch results are read only.
+Scope: five affected-shadow seeds only.  No patient deletion, attack training,
+damping scan, automatic plateau selection, or truth replacement.  Optional
+Hessian Ritz diagnostics exist for a later explicit invocation but are disabled
+by default.  The original 50-epoch results are read only.
 
 Exactness: rows 0..T0-1 of ``make_epoch_orders(train, E_max, seed + 700000)``
 equal the original T0-epoch order (the generator is consumed row by row), the
@@ -49,15 +50,15 @@ _spec.loader.exec_module(legacy)
 
 LOG = logging.getLogger("a20_convergence")
 WD = legacy.WD
-SCHEMA = "pathway2_A_convergence_curve_v1"
+SCHEMA = "pathway2_A_convergence_curve_v2"
 
 
 # ---------------------------------------------------------------------------
 # run specification
 # ---------------------------------------------------------------------------
 
-def run_specs(context):
-    """Every Stage 1 model of the formal design, in a fixed array order."""
+def run_specs(context, include_secondary=False):
+    """Primary five affected seeds; fixed models are an explicit secondary panel."""
     p, splits, full = context["pargs"], context["splits"], context["full"]
     a = int(p.affected_shadow)
     ck = full / "checkpoints"
@@ -69,17 +70,18 @@ def run_specs(context):
             "reference": ck / f"shadow_{a}_baseline_seed{int(seed)}.pt",
             "epoch_dir": ck / f"baseline_seed{int(seed)}_epochs",
             "recorded_orders": full / f"stage1_order_seed{int(seed)}.npz"})
-    specs.append({
-        "name": "target", "role": "target", "seed": int(p.target_seed),
-        "train": splits["target_train_idx"], "heldout": splits["target_test_idx"],
-        "reference": ck / "target_fixed.pt", "epoch_dir": None, "recorded_orders": None})
-    for sid in range(int(p.n_shadow)):
-        if sid == a:
-            continue
+    if include_secondary:
         specs.append({
-            "name": f"shadow{sid}_fixed", "role": "fixed_shadow", "seed": int(p.fixed_shadow_seed) + sid,
-            "train": splits["shadow_models"][sid]["train_idx"], "heldout": splits["shadow_models"][sid]["test_idx"],
-            "reference": ck / f"shadow_{sid}_fixed.pt", "epoch_dir": None, "recorded_orders": None})
+            "name": "target", "role": "target", "seed": int(p.target_seed),
+            "train": splits["target_train_idx"], "heldout": splits["target_test_idx"],
+            "reference": ck / "target_fixed.pt", "epoch_dir": None, "recorded_orders": None})
+        for sid in range(int(p.n_shadow)):
+            if sid == a:
+                continue
+            specs.append({
+                "name": f"shadow{sid}_fixed", "role": "fixed_shadow", "seed": int(p.fixed_shadow_seed) + sid,
+                "train": splits["shadow_models"][sid]["train_idx"], "heldout": splits["shadow_models"][sid]["test_idx"],
+                "reference": ck / f"shadow_{sid}_fixed.pt", "epoch_dir": None, "recorded_orders": None})
     for spec in specs:
         spec["train"] = np.asarray(spec["train"], dtype=np.int64)
         spec["heldout"] = np.asarray(spec["heldout"], dtype=np.int64)
@@ -88,6 +90,33 @@ def run_specs(context):
 
 def order_sha(orders):
     return hashlib.sha256(np.ascontiguousarray(orders).tobytes()).hexdigest()[:16]
+
+
+def array_sha(value, block_bytes=1 << 26):
+    """Hash a potentially large contiguous array without an additional full copy."""
+    array = np.asarray(value)
+    if not array.flags.c_contiguous:
+        array = np.ascontiguousarray(array)
+    view = memoryview(array).cast("B")
+    digest = hashlib.sha256()
+    for start in range(0, view.nbytes, block_bytes):
+        digest.update(view[start:start + block_bytes])
+    return digest.hexdigest()
+
+
+def dataset_fingerprint(X, y):
+    return {"X_shape": list(X.shape), "X_dtype": str(X.dtype), "X_sha256": array_sha(X),
+            "y_shape": list(y.shape), "y_dtype": str(y.dtype), "y_sha256": array_sha(y)}
+
+
+def source_files():
+    return [HERE / name for name in (
+        "05_end_to_end_patient_loo_pilot.py", "07_cross_stage_score_ladder.py",
+        "11_stage1_diagnostics.py", "stage1_diagnostic_core.py",
+        "20_A_convergence_curve.py", "20_A_convergence_report.py",
+        "20_A_convergence.slurm", "submit_A_step1.sh",
+        "submit_stage1_extended_convergence.sh",
+    )] + [REPO / "experiments/pathway2/frozen_baseline.json"]
 
 
 def reference_files(spec, T0, save_epochs):
@@ -136,7 +165,12 @@ class EpochObserver:
     def __call__(self, model, row):
         epoch = int(row["epoch"])
         with_grad = epoch % self.args.gradient_every == 0 or epoch in (0, self.T0, self.args.epochs)
-        info = core.observe_checkpoint(model, self.X, self.y, self.spec["train"], self.args.hvp_batch, WD, with_grad)
+        with_mc = (epoch in (self.T0, self.args.epochs) or
+                   (epoch > self.T0 and (epoch - self.T0) % self.args.dropout_mc_every == 0))
+        info = core.observe_checkpoint(
+            model, self.X, self.y, self.spec["train"], self.args.hvp_batch, WD, with_grad,
+            mc_reps=self.args.dropout_mc_reps if with_mc else 0,
+        )
         probs, ce, correct = evaluate_rows(model, self.X, self.y, self.rows, self.args.eval_batch)
         n = self.n_train
         true_prob = probs[np.arange(len(self.rows)), self.labels]
@@ -196,7 +230,7 @@ def extend_run(spec, context, args, pilot, output):
             raise RuntimeError(f"{spec['name']}: recorded original order differs from the seed derivation")
     np.savez_compressed(output / "epoch_orders.npz", raw_index_order=orders)
     save_epochs = set(int(e) for e in p.save_epoch_checkpoints) if spec["epoch_dir"] is not None else set()
-    strict = spec["role"] == "affected_shadow" or not args.allow_fixed_mismatch
+    strict = True
     reference = legacy.load_payload(spec["reference"], pilot)
     legacy.assert_equal(int(reference["metadata"]["seed"]), spec["seed"], f"{spec['name']}: reference seed mismatch")
     checks = []
@@ -208,7 +242,6 @@ def extend_run(spec, context, args, pilot, output):
             message = f"{spec['name']} epoch {check['epoch']}: not the original trajectory ({check})"
             if strict:
                 raise RuntimeError(message + "; the extended curve would not describe the original run")
-            LOG.warning(message)
 
     def on_epoch(epoch, model, optimizer):
         if epoch in save_epochs:
@@ -307,20 +340,20 @@ def parse_args(argv=None):
     ap.add_argument("--list_runs", action="store_true")
     ap.add_argument("--epochs", type=int, default=100, help="extended total epochs E_max")
     ap.add_argument("--checkpoint_epochs", type=int, nargs="*", default=None,
-                    help="default: T0 and every 10 epochs up to E_max")
-    ap.add_argument("--spectrum_epochs", type=int, nargs="*", default=None,
-                    help="default: T0, T0+10, ..., E_max (affected shadow runs only)")
+                    help="default: T0 and every 5 epochs up to E_max")
+    ap.add_argument("--spectrum_epochs", type=int, nargs="*", default=[],
+                    help="optional explicit epochs; disabled by default for the meeting Step 1")
     ap.add_argument("--spectrum_roles", nargs="*", default=["affected_shadow"],
                     choices=["affected_shadow", "target", "fixed_shadow"])
     ap.add_argument("--lanczos_iters", type=int, default=50)
     ap.add_argument("--probe_seeds", type=int, nargs="+", default=[1701, 1702])
     ap.add_argument("--hvp_batch", type=int, default=64)
     ap.add_argument("--eval_batch", type=int, default=256)
-    ap.add_argument("--gradient_every", type=int, default=1)
-    ap.add_argument("--allow_fixed_mismatch", action="store_true", default=True,
-                    help="target/fixed shadows: record a bitwise mismatch instead of failing (default)")
-    ap.add_argument("--strict_all", dest="allow_fixed_mismatch", action="store_false",
-                    help="fail on any bitwise mismatch, including target/fixed shadows")
+    ap.add_argument("--gradient_every", type=int, default=5)
+    ap.add_argument("--dropout_mc_every", type=int, default=25)
+    ap.add_argument("--dropout_mc_reps", type=int, default=16)
+    ap.add_argument("--include_secondary", action="store_true",
+                    help="explicit secondary run panel: target plus unaffected shadows")
     ap.add_argument("--v11_damping_dir", default=None, help="optional v1.1 damping dir for the epoch-T0 spectrum cross-check")
     ap.add_argument("--require_cuda", action="store_true")
     return ap.parse_args(argv)
@@ -330,13 +363,12 @@ def resolve_defaults(args, T0):
     if args.epochs <= T0:
         raise ValueError(f"--epochs must exceed the original {T0}")
     if args.checkpoint_epochs is None:
-        args.checkpoint_epochs = sorted({T0, *range(T0, args.epochs + 1, 10), args.epochs})
-    if args.spectrum_epochs is None:
-        args.spectrum_epochs = sorted({T0, *range(T0, args.epochs + 1, 10), args.epochs})
+        args.checkpoint_epochs = sorted({T0, *range(T0, args.epochs + 1, 5), args.epochs})
     args.checkpoint_epochs = sorted(set(args.checkpoint_epochs) | set(args.spectrum_epochs))
     if any(not 1 <= e <= args.epochs for e in args.checkpoint_epochs):
         raise ValueError("checkpoint/spectrum epochs must be within 1..E_max")
-    if min(args.lanczos_iters, args.hvp_batch, args.eval_batch, args.gradient_every) < 1:
+    if min(args.lanczos_iters, args.hvp_batch, args.eval_batch, args.gradient_every,
+           args.dropout_mc_every) < 1 or args.dropout_mc_reps < 2:
         raise ValueError("iteration and batch settings must be positive")
 
 
@@ -350,13 +382,25 @@ def main(argv=None):
     for protected in (full, REPO):
         if out_root == protected or out_root.is_relative_to(protected) or protected.is_relative_to(out_root):
             raise RuntimeError(f"Output root overlaps a protected directory: {protected}")
+    def git(*cmd):
+        try:
+            return subprocess.check_output(["git", "-C", str(REPO), *cmd], text=True).strip()
+        except (OSError, subprocess.CalledProcessError):
+            return None
+
+    actual_commit = git("rev-parse", "HEAD")
+    expected_commit = os.environ.get("OCT_A_CODE")
+    if expected_commit and actual_commit != expected_commit:
+        raise RuntimeError(f"Queued code commit {expected_commit} changed to {actual_commit}")
+    if git("status", "--porcelain", "--untracked-files=no"):
+        raise RuntimeError("Tracked source files changed after submission")
     score = legacy.module_from_path("score07_a20", HERE / "07_cross_stage_score_ladder.py")
     pilot = score.import_pilot_module()
     if args.list_runs:
         config = legacy.read_json(full / "experiment_config.json")
         split = legacy.read_json(full / "splits" / "fresh_patient_split.json")
         context = {"pargs": argparse.Namespace(**config["args"]), "splits": split, "full": full}
-        for index, spec in enumerate(run_specs(context)):
+        for index, spec in enumerate(run_specs(context, args.include_secondary)):
             print(index, spec["name"], spec["role"], spec["seed"])
         return
     ns = argparse.Namespace(full_dir=str(full), dose_dir=None, mode="convergence", data_dir=args.data_dir,
@@ -365,7 +409,7 @@ def main(argv=None):
     context["splits"] = legacy.read_json(full / "splits" / "fresh_patient_split.json")
     T0 = int(context["pargs"].shadow_epochs)
     resolve_defaults(args, T0)
-    specs = run_specs(context)
+    specs = run_specs(context, args.include_secondary)
     if (args.run is None) == (args.array_index is None):
         raise ValueError("Pass exactly one of --run or --array_index")
     if args.array_index is not None:
@@ -385,12 +429,10 @@ def main(argv=None):
     inputs = list(dict.fromkeys(common_inputs + reference_files(spec, T0, save_epochs)))
     fingerprints = {str(path): legacy.sha(path) for path in inputs}
     legacy.write_json(output / "input_sha256.json", fingerprints)
-
-    def git(*cmd):
-        try:
-            return subprocess.check_output(["git", "-C", str(REPO), *cmd], text=True).strip()
-        except (OSError, subprocess.CalledProcessError):
-            return None
+    source_sha = {str(path.relative_to(REPO)): legacy.sha(path) for path in source_files()}
+    legacy.write_json(output / "source_sha256.json", source_sha)
+    dataset_before = dataset_fingerprint(context["X"], context["y"])
+    legacy.write_json(output / "dataset_fingerprint.json", dataset_before)
     manifest = {
         "schema": SCHEMA, "status": "running", "run": spec["name"], "role": spec["role"], "seed": spec["seed"],
         "all_runs": [s["name"] for s in specs], "original_epochs": T0, "extended_epochs": args.epochs,
@@ -401,11 +443,13 @@ def main(argv=None):
         "device": str(pilot.DEVICE), "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
         "cudnn_allow_tf32": torch.backends.cudnn.allow_tf32, "matmul_allow_tf32": torch.backends.cuda.matmul.allow_tf32,
         "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG"),
-        "git_commit": git("rev-parse", "HEAD"), "git_dirty": bool(git("status", "--porcelain")),
+        "git_commit": actual_commit, "queued_git_commit": expected_commit,
+        "git_dirty_tracked": bool(git("status", "--porcelain", "--untracked-files=no")),
+        "source_sha256": source_sha,
         "slurm_job_id": os.environ.get("SLURM_JOB_ID"), "slurm_array_job_id": os.environ.get("SLURM_ARRAY_JOB_ID"),
         "slurm_array_task_id": os.environ.get("SLURM_ARRAY_TASK_ID"),
         "scope": "Descriptive convergence curve of the original Stage 1 recipe extended to E_max epochs. "
-                 "No deletion, attack or truth. Plateau choice is made by the report script and the team.",
+                 "No deletion, attack or truth. Code does not choose a plateau; the team freezes E* separately.",
     }
     legacy.write_json(output / "manifest.json", manifest)
     started = time.time()
@@ -417,8 +461,13 @@ def main(argv=None):
             spectrum_rows = spectrum(spec, context, args, pilot, score, output)
         if not all(legacy.sha(Path(path)) == value for path, value in fingerprints.items()):
             raise RuntimeError("An original input changed during the run")
+        if {str(path.relative_to(REPO)): legacy.sha(path) for path in source_files()} != source_sha:
+            raise RuntimeError("A source file changed during the run")
+        if dataset_fingerprint(context["X"], context["y"]) != dataset_before:
+            raise RuntimeError("Loaded dataset arrays changed during the run")
         manifest.update(status="complete", elapsed_seconds=time.time() - started, n_curve_rows=len(rows),
                         n_spectrum_rows=len(spectrum_rows), input_files_unchanged=True,
+                        source_files_unchanged=True, dataset_arrays_unchanged=True,
                         final_row={k: v for k, v in rows[-1].items() if not isinstance(v, (dict, list))})
         legacy.write_json(output / "manifest.json", manifest)
         LOG.info("COMPLETE %s -> %s", spec["name"], output)

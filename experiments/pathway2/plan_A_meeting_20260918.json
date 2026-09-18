@@ -1,45 +1,79 @@
 {
-  "schema": "oct_pathway2_plan_A_meeting_v1",
+  "schema": "oct_pathway2_plan_A_meeting_v2",
   "date": "2026-09-18",
   "branch": "exp/pathway2-a-stationarity",
   "parent_plan": "plan.json (unchanged)",
   "frozen_contract": "frozen_baseline.json (unchanged)",
-  "source": "Advisor meeting 2026-09-18 (New Recording 18): train to the plateau first, then one Level 3 rerun at that epoch, then smaller damping; Eq. 74 trajectory route deprioritised and shared for review only.",
+  "source": "Advisor meeting 2026-09-18: first inspect Stage-1 convergence, freeze one reviewed epoch, rerun Level 3 at that epoch with original damping, and only then inspect smaller damping.",
   "status": "implemented_not_submitted",
   "gpu_jobs_submitted": 0,
+  "global_gpu_limit": 4,
   "steps": [
     {
       "id": "A-step1-convergence",
       "entry": "scripts/cross_stage/submit_A_step1.sh",
       "runner": "scripts/cross_stage/20_A_convergence_curve.py",
       "report": "scripts/cross_stage/20_A_convergence_report.py",
+      "selection_record": "scripts/cross_stage/20_A_freeze_epoch.py",
       "extended_epochs": 100,
-      "models": ["shadow3 seeds 42-46", "target 42007", "fixed shadows 0,1,2,4"],
-      "per_epoch": ["online_train_ce", "eval_objective", "eval_grad_norm", "relative_epoch_update",
-                    "heldout_ce", "heldout_accuracy", "interface_tv_prev_mean", "interface_tv_from_T0_mean"],
-      "checkpoints_and_spectrum_epochs": [50, 60, 70, 80, 90, 100],
-      "exactness": "epochs 25/50 parameters, Adam state and RNG bitwise equal to the frozen run; affected shadow mismatch aborts",
-      "plateau_rule": {
-        "series": "online_train_ce 10-epoch window mean",
-        "flat_pair": "|m_k - m_k+10| <= max(0.10*m_k, 0.002, 2*sqrt(se_k^2 + se_k+10^2))",
-        "start": "smallest k >= 50 with every later pair flat and at least two pairs",
-        "E_star": "max over the five affected-shadow seeds; final choice confirmed with the advisor"
-      }
+      "primary_runs": [
+        "affected shadow 3 seed 42",
+        "affected shadow 3 seed 43",
+        "affected shadow 3 seed 44",
+        "affected shadow 3 seed 45",
+        "affected shadow 3 seed 46"
+      ],
+      "array_concurrency": 4,
+      "default_spectrum": false,
+      "checkpoint_epochs": [50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100],
+      "per_epoch": [
+        "online_train_ce",
+        "eval_objective",
+        "relative_epoch_update",
+        "heldout_ce",
+        "heldout_accuracy",
+        "interface_tv_prev_mean",
+        "interface_tv_from_T0_mean"
+      ],
+      "gradient_every": 5,
+      "dropout_mc_epochs": [50, 75, 100],
+      "exactness": "Original epoch-25/50 parameters, Adam state and CPU/CUDA RNG plus final epoch-50 model/RNG must match. Source, input and dataset fingerprints must remain unchanged.",
+      "selection_policy": "No automatic plateau label or suggested E*. The team reviews all five curves and freezes exactly one saved checkpoint in frozen_E_star.json."
     },
     {
-      "id": "A-step2-L3-at-Estar",
-      "entry": "scripts/cross_stage/submit_A_step2.sh E_STAR",
-      "jobs": ["10 truth full (05)", "10 truth dose01 (05)", "10 score (07, gamma_A 0.2, gamma_S 1, grid 0.8 1.2)",
-               "21 diag: 12 preflight + 12 damping grid 0.01 0.03 0.1 0.3 1 2"],
-      "readout": "scripts/cross_stage/22_A_compare_E.py",
-      "comparison_reference": "original 50-epoch shadow3_full score_ladder_A0.2_S1 and v1.1 damping_22122145 / preflight",
-      "new_anchor_only": "results under oct2-pathway2-runs/A/l3_at_E<E>; the original truth is never replaced"
+      "id": "A-step2-manual-gates",
+      "entry": "scripts/cross_stage/submit_A_step2.sh",
+      "automatic_dependency_chain": false,
+      "stages": [
+        "prepare",
+        "test",
+        "truth-full",
+        "score gamma_A=0.2 gamma_S=1 only",
+        "compare-primary",
+        "truth-dose",
+        "preflight",
+        "approve-a2",
+        "damping gamma_S=0.01,0.03,0.1,0.3,1,2",
+        "compare-full"
+      ],
+      "truth_replay": "At original epoch 50, verify every target/fixed/baseline/no-op/LOO endpoint against the frozen condition. Deterministically regenerate native Adam state and continue the same in-memory optimizer to E*. Baseline/no-op E* anchors must match Step-1 frozen checkpoints.",
+      "comparison": "Require identical seed/patient/class keys and compare on the same gate-passing cell intersection at 50 and E*. gamma=0.01 is E*-only because the frozen E50 sweep did not contain it.",
+      "a2_gate": "Damping submission requires an immutable approval record hashing the A1 comparison and truth-preflight artifacts.",
+      "new_anchor_only": "All results live under a timestamped oct2-pathway2-runs/A/l3_at_E... attempt; no original truth is overwritten or replaced."
     }
   ],
-  "not_run_by_default": ["A-decay arm of plan.json", "second plateau point", "warm-start / proximal LOO truth"],
+  "not_run_by_default": [
+    "target and unaffected-shadow convergence curves",
+    "Step-1 Hessian spectrum",
+    "A-decay arm of plan.json",
+    "second plateau point",
+    "warm-start or proximal LOO truth",
+    "trajectory derivative Eq. 74"
+  ],
   "forbidden_conclusions": [
     "A flat online loss alone proves the Eq. 56 stationarity premise",
     "An E* result replaces or validates the original 50-epoch truth",
+    "A smaller damping is better without matched qualified coverage and residual checks",
     "No improvement at one E* rules out every static influence method"
   ]
 }

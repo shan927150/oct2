@@ -1,61 +1,161 @@
 #!/bin/bash
-# Route A step 2 (meeting 2026-09-18): rerun the formal truth + Level 3 score at ONE plateau epoch E*,
-# then the v1.1 damping sweep with smaller gamma. Existing, already validated entry points only
-# (05 via 10_run_calibration, 07, 12); every Stage 1 model (target, shadows, LOO) is trained for E* epochs.
-#
-#   export OCT_BASELINE_ROOT=$HOME/oct2-calibration-v4
-#   export OCT_RUNS_ROOT=$HOME/oct2-pathway2-runs/A
-#   export OCT_DATA_DIR=/u/yli103/oct2/data
-#   bash scripts/cross_stage/submit_A_step2.sh 70        # 70 = E* chosen from the step 1 report
+# Manually gated Route-A Step 2. Every submit command creates exactly one
+# Slurm job and never adds an automatic dependency. Review `status` and the
+# completed artifacts before invoking the next command.
 set -euo pipefail
-E="${1:?usage: submit_A_step2.sh E_STAR}"
-: "${OCT_BASELINE_ROOT:?}"; : "${OCT_RUNS_ROOT:?}"; : "${OCT_DATA_DIR:?}"
-case "$E" in ''|*[!0-9]*) echo "E_STAR must be an integer" >&2; exit 2 ;; esac
-if [ "$E" -le 50 ]; then echo "E_STAR=$E does not extend the original 50 epochs" >&2; exit 2; fi
-ACCOUNT="${OCT_ACCOUNT:-bgjy-delta-gpu}"
-ROOT_DIR="$(git rev-parse --show-toplevel)"
-cd "$ROOT_DIR"
-if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
-  echo "Tracked files are modified; commit or restore them before submitting." >&2; exit 2
-fi
-CODE="$(git rev-parse HEAD)"
-mkdir -p logs "$OCT_RUNS_ROOT"
-PREFLIGHT="$(mktemp)"
-if ! python3 experiments/pathway2/preflight.py verify --baseline-root "$OCT_BASELINE_ROOT" \
-     --output-root "$OCT_RUNS_ROOT" > "$PREFLIGHT"; then
-  cat "$PREFLIGHT" >&2; echo "Route A preflight failed; nothing submitted." >&2; exit 2
-fi
-export OCT_A_STEP2_ROOT="$OCT_RUNS_ROOT/l3_at_E${E}"
-if [ -e "$OCT_A_STEP2_ROOT" ]; then echo "$OCT_A_STEP2_ROOT already exists; results are never overwritten" >&2; exit 2; fi
-PANEL_SRC="$OCT_BASELINE_ROOT/results/cross_stage_calibration_v4_1/panel/eligibility_preflight.json"
-mkdir -p "$OCT_A_STEP2_ROOT/panel"
-cp -p "$PANEL_SRC" "$OCT_A_STEP2_ROOT/panel/eligibility_preflight.json"
-cmp "$PANEL_SRC" "$OCT_A_STEP2_ROOT/panel/eligibility_preflight.json"
-mv "$PREFLIGHT" "$OCT_A_STEP2_ROOT/route_a_preflight.json"
-SUB="$OCT_A_STEP2_ROOT/submission.txt"
-{ echo "CODE=$CODE"; echo "E_STAR=$E"; echo "ROOT=$OCT_A_STEP2_ROOT";
-  echo "PANEL_SHA256=$(sha256sum "$PANEL_SRC" | cut -d' ' -f1)"; } > "$SUB"
-COMMON=(--root "$OCT_A_STEP2_ROOT" --data_dir "$OCT_DATA_DIR" --shadow_epochs "$E")
-FULL="$(sbatch --parsable --account="$ACCOUNT" --job-name=oct_A_truth_full \
-  scripts/cross_stage/10_calibration.slurm truth "${COMMON[@]}" --condition full)"
-echo "TRUTH_FULL=$FULL" >> "$SUB"
-DOSE="$(sbatch --parsable --account="$ACCOUNT" --job-name=oct_A_truth_dose \
-  scripts/cross_stage/10_calibration.slurm truth "${COMMON[@]}" --condition dose01)"
-echo "TRUTH_DOSE01=$DOSE" >> "$SUB"
-SCORE="$(sbatch --parsable --account="$ACCOUNT" --job-name=oct_A_score --dependency="afterok:$FULL" \
-  --kill-on-invalid-dep=yes scripts/cross_stage/10_calibration.slurm score "${COMMON[@]}" --condition full \
-  --damping_attack 0.2 --damping_shadow 1 --damping_shadow_grid 0.8 1.2)"
-echo "SCORE=$SCORE" >> "$SUB"
-DIAG="$(sbatch --parsable --account="$ACCOUNT" --dependency="afterok:$FULL:$DOSE:$SCORE" --kill-on-invalid-dep=yes \
-  --export=ALL,OCT_A_STEP2_ROOT="$OCT_A_STEP2_ROOT" scripts/cross_stage/21_A_diag_at_E.slurm)"
-echo "DIAG=$DIAG" >> "$SUB"
-cat "$SUB"
-cat <<MSG
 
-Monitor:
-  sacct -X -j $FULL,$DOSE,$SCORE,$DIAG --format=JobID%12,JobName%18,State,ExitCode,Elapsed,NodeList
-After all four are COMPLETED 0:0:
-  module load pytorch-conda/2.8
-  python3 scripts/cross_stage/22_A_compare_E.py --new_root "$OCT_A_STEP2_ROOT" \\
-      --baseline_root "$OCT_BASELINE_ROOT"
-MSG
+usage() {
+  cat <<'EOF'
+Usage:
+  submit_A_step2.sh prepare SELECTION_JSON
+  submit_A_step2.sh test [STEP2_ROOT]
+  submit_A_step2.sh truth-full [STEP2_ROOT]
+  submit_A_step2.sh score [STEP2_ROOT]
+  submit_A_step2.sh compare-primary [STEP2_ROOT]
+  submit_A_step2.sh truth-dose [STEP2_ROOT]
+  submit_A_step2.sh preflight [STEP2_ROOT]
+  submit_A_step2.sh approve-a2 [STEP2_ROOT] NOTE
+  submit_A_step2.sh damping [STEP2_ROOT]
+  submit_A_step2.sh compare-full [STEP2_ROOT]
+  submit_A_step2.sh status [STEP2_ROOT]
+
+prepare requires OCT_BASELINE_ROOT and OCT_RUNS_ROOT. GPU stages additionally
+require OCT_DATA_DIR. STEP2_ROOT may instead be exported as OCT_A_STEP2_ROOT.
+Nothing downstream is submitted automatically.
+EOF
+}
+
+COMMAND="${1:-}"
+if [ -z "$COMMAND" ] || [ "$COMMAND" = "-h" ] || [ "$COMMAND" = "--help" ]; then
+  usage
+  exit 0
+fi
+shift
+
+REPO="$(git rev-parse --show-toplevel)"
+cd "$REPO"
+CONTROL="scripts/cross_stage/21_A_step2_control.py"
+ACCOUNT="${OCT_ACCOUNT:-bgjy-delta-gpu}"
+
+root_arg() {
+  local supplied="${1:-${OCT_A_STEP2_ROOT:-}}"
+  if [ -z "$supplied" ]; then
+    echo "Pass STEP2_ROOT or export OCT_A_STEP2_ROOT" >&2
+    exit 2
+  fi
+  python3 - "$supplied" <<'PY'
+from pathlib import Path
+import sys
+print(Path(sys.argv[1]).expanduser().resolve())
+PY
+}
+
+load_state() {
+  export OCT_A_STEP2_ROOT="$1"
+  export OCT_A_E_STAR
+  OCT_A_E_STAR="$(python3 "$CONTROL" field --root "$1" --name E_star)"
+  export OCT_A_CODE
+  OCT_A_CODE="$(python3 "$CONTROL" field --root "$1" --name git_commit)"
+  export OCT_BASELINE_ROOT
+  OCT_BASELINE_ROOT="$(python3 "$CONTROL" field --root "$1" --name baseline_root)"
+  export OCT_A_SELECTION="$1/frozen_E_star.json"
+  export PROJECT_DIR="$REPO"
+}
+
+submit_one() {
+  local action="$1"
+  shift
+  python3 "$CONTROL" check --root "$OCT_A_STEP2_ROOT" --action "$action" >/dev/null
+  local job
+  job="$(sbatch --parsable --account="$ACCOUNT" "$@")"
+  job="${job%%;*}"
+  python3 "$CONTROL" record-job --root "$OCT_A_STEP2_ROOT" --action "$action" --job_id "$job"
+  echo "$action submitted as job $job"
+  echo "No downstream job was submitted. Inspect with:"
+  echo "  bash scripts/cross_stage/submit_A_step2.sh status '$OCT_A_STEP2_ROOT'"
+}
+
+case "$COMMAND" in
+  prepare)
+    SELECTION="${1:?prepare requires frozen_E_star.json}"
+    : "${OCT_BASELINE_ROOT:?set OCT_BASELINE_ROOT}"
+    : "${OCT_RUNS_ROOT:?set OCT_RUNS_ROOT (must end in /A)}"
+    ROOT="$(python3 "$CONTROL" prepare --selection "$SELECTION" \
+      --baseline_root "$OCT_BASELINE_ROOT" --runs_root "$OCT_RUNS_ROOT")"
+    echo "Prepared immutable Step-2 attempt: $ROOT"
+    printf "export OCT_A_STEP2_ROOT='%s'\n" "$ROOT"
+    echo "Next, submit only the Step-2 GPU replay smoke test."
+    ;;
+  status)
+    ROOT="$(root_arg "${1:-}")"
+    python3 "$CONTROL" status --root "$ROOT"
+    EVENTS="$ROOT/submission_events.jsonl"
+    if [ -s "$EVENTS" ] && command -v sacct >/dev/null 2>&1; then
+      IDS="$(python3 - "$EVENTS" <<'PY'
+import json, sys
+print(",".join(row["job_id"] for row in map(json.loads, open(sys.argv[1]))))
+PY
+)"
+      if [ -n "$IDS" ]; then
+        sacct -X -j "$IDS" --format=JobID%18,JobName%18,State,ExitCode,Elapsed,NodeList || true
+      fi
+    fi
+    ;;
+  test)
+    ROOT="$(root_arg "${1:-}")"
+    load_state "$ROOT"
+    mkdir -p logs
+    submit_one test scripts/cross_stage/21_A_tests.slurm
+    ;;
+  truth-full|truth-dose|score|preflight|damping)
+    ROOT="$(root_arg "${1:-}")"
+    load_state "$ROOT"
+    : "${OCT_DATA_DIR:?set OCT_DATA_DIR}"
+    mkdir -p logs
+    case "$COMMAND" in
+      truth-full) submit_one truth-full scripts/cross_stage/21_A_truth_at_E.slurm full ;;
+      truth-dose) submit_one truth-dose scripts/cross_stage/21_A_truth_at_E.slurm dose01 ;;
+      score) submit_one score scripts/cross_stage/21_A_score_at_E.slurm ;;
+      preflight) submit_one preflight scripts/cross_stage/21_A_preflight_at_E.slurm ;;
+      damping) submit_one damping scripts/cross_stage/21_A_damping_at_E.slurm ;;
+    esac
+    ;;
+  compare-primary|compare-full)
+    ROOT="$(root_arg "${1:-}")"
+    load_state "$ROOT"
+    ACTION="$COMMAND"
+    MODE=primary
+    OUT="$ROOT/compare_primary_vs_E50"
+    if [ "$COMMAND" = "compare-full" ]; then
+      MODE=full
+      OUT="$ROOT/compare_full_vs_E50"
+    fi
+    python3 "$CONTROL" check --root "$ROOT" --action "$ACTION" >/dev/null
+    module reset
+    module load pytorch-conda/2.8
+    python3 scripts/cross_stage/22_A_compare_E.py --mode "$MODE" \
+      --new_root "$ROOT" --baseline_root "$OCT_BASELINE_ROOT" --out "$OUT"
+    echo "Comparison written to $OUT"
+    ;;
+  approve-a2)
+    if [ "$#" -ge 2 ]; then
+      ROOT="$(root_arg "$1")"
+      shift
+      NOTE="$*"
+    elif [ "$#" -eq 1 ] && [ -n "${OCT_A_STEP2_ROOT:-}" ]; then
+      ROOT="$(root_arg "$OCT_A_STEP2_ROOT")"
+      NOTE="$1"
+    else
+      echo "approve-a2 requires STEP2_ROOT and a quoted review note (or exported OCT_A_STEP2_ROOT)" >&2
+      exit 2
+    fi
+    load_state "$ROOT"
+    python3 "$CONTROL" approve-a2 --root "$ROOT" --note "$NOTE"
+    echo "A2 is now unlocked for this attempt only. No damping job was submitted."
+    ;;
+  *)
+    echo "Unknown command: $COMMAND" >&2
+    usage >&2
+    exit 2
+    ;;
+esac
