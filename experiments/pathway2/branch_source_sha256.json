@@ -75,6 +75,16 @@
     "src/run_tracin.py": "51c4edd5195046789d811e7a260458adea8ad7200dfab1662134d899a2e14f2a",
     "src/split.py": "7f020ee8473e45caca6fe35bdeac1426beaad25494807144e8bb2a95ced24da2",
     "src/visualize.py": "83a52d1ce30c6e51b3299a237767215f7dde5c9f702e3e029a435a7758ec2172",
-    "src/visualize_tracin.py": "a472f54d2e89a0990625803ca0c7acadba1a8764f1bed11a87f18d020faea020"
-  }
+    "src/visualize_tracin.py": "a472f54d2e89a0990625803ca0c7acadba1a8764f1bed11a87f18d020faea020",
+    "scripts/cross_stage/16_b1_smoke.py": "99db93b9ea6caa8f9ff1886d892757b6c24f926674a5bae6f4fab992e4c9f1b7",
+    "scripts/cross_stage/16_b1_smoke.slurm": "1359bfa5f6fd28c5efd0eb7bccae82770ced6c8ed39b2ffe69031bf6db2c01a6",
+    "scripts/cross_stage/16_b1_tests.slurm": "19e12c9deadfe77cc1185c4294adb175fad5a9eb9518b7a7321435b540b8135a",
+    "scripts/cross_stage/submit_b1.sh": "e0b8a0c7868d81512a95b29bca715b46676f1625146daf97d32a701ee60f6ddc",
+    "scripts/cross_stage/tests/test_b1_smoke.py": "99e884583648936a23c083d3bd2874856f1b5a1ca664fbe7497edeaee494ca9e",
+    "scripts/cross_stage/stage1_trajectory_core.py": "17ab109422a6bae0721d6997408abde049f269f98d67c604af5ce0da06bb09bd",
+    "scripts/cross_stage/collect_b1.py": "cfb3e22d31bac44918c2e8fa3916d4aef091b95ff37b5696eebeb6585467a733",
+    "scripts/cross_stage/tests/test_b1_collect.py": "a04d674dbc9ccbba8a2bc4b7d489327879a8283b3cd8385cf967d0a1ddbce817",
+    "docs/PATHWAY2_B1_REVIEWED_CN.md": "36ca5d8fb904f9169c90aad361814d969cd8252fd1983aa6a91a99d7da574f29"
+  },
+  "b1_review_note": "B1 additions only. Original hash entries and frozen contract unchanged. Full native replay, separate precision controls, paired-map FD, complete masks, reachable-state Adam tangent, and joint parameter/prediction gates. Earlier E0 TF32 probe differences are directional diagnostics, not universal operator error bounds."
 }

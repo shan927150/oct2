@@ -16,7 +16,7 @@
 set -euo pipefail
 cd "${OCT_B_CODE_ROOT:-${SLURM_SUBMIT_DIR:-$PWD}}"
 source scripts/cross_stage/pathway2_job_env.sh
-for TEST in test_b1_smoke test_e0_residual_decomposition test_b0_dose_derivative \
+for TEST in test_b1_smoke test_b1_collect test_e0_residual_decomposition test_b0_dose_derivative \
             test_b0_train test_stage1_v11; do
   python3 -B "scripts/cross_stage/tests/$TEST.py"
 done

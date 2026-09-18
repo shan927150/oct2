@@ -31,5 +31,7 @@ python3 -B scripts/cross_stage/16_b1_smoke.py \
   --patients 807 2085 1369 \
   --prefix_epochs 0 1 5 \
   --exponents 10 14 18 22 24 \
+  --exponents64 10 14 18 22 24 28 32 \
+  --prediction_batch 64 \
   --require_cuda
 echo "B1_OUTPUT: $OUT"
