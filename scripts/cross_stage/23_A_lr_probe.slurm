@@ -30,6 +30,7 @@ export CUBLAS_WORKSPACE_CONFIG=:4096:8
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-8}"
 export MKL_NUM_THREADS="$OMP_NUM_THREADS"
 export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
+python3 scripts/cross_stage/23_A_lr_control.py check "$OCT_A_LR_OUT"
 FULL="$OCT_BASELINE_ROOT/results/cross_stage_calibration_v4_1/shadow3_full"
 srun --unbuffered python scripts/cross_stage/23_A_lr_continuation.py \
   --require_cuda --full_dir "$FULL" --data_dir "$OCT_DATA_DIR" \

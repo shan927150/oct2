@@ -161,7 +161,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="action", required=True)
     sub.add_parser("prepare").add_argument("note")
-    for action in ("test", "run", "status", "mark-test"):
+    for action in ("test", "run", "status", "mark-test", "check"):
         p = sub.add_parser(action)
         p.add_argument("root", type=Path)
         if action == "run":
@@ -173,6 +173,9 @@ def main():
         submit(args.root, args.action, getattr(args, "max_parallel", 2))
     elif args.action == "mark-test":
         mark_test(args.root)
+    elif args.action == "check":
+        root, cfg = load_config(args.root)
+        print(json.dumps({"checked_root": str(root), "git_commit": cfg["git_commit"]}))
     else:
         cfg = read(args.root / "probe_config.json")
         print(json.dumps({"root": cfg["root"], "git_commit": cfg["git_commit"],
