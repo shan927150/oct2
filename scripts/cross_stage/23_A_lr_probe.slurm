@@ -12,7 +12,7 @@
 
 # Route A convergence-control probe: array 0-9 = seed(42..46) x arm(control,decay),
 # continuing each affected baseline from its Step-1 E100 checkpoint. Baselines only.
-# Submit through scripts/cross_stage/submit_A_lr_probe.sh.
+# Submit through submit_A_lr_probe.sh run after the separately reviewed GPU test.
 set -euo pipefail
 cd "${PROJECT_DIR:-${SLURM_SUBMIT_DIR:-$PWD}}"
 test -f src/config.py

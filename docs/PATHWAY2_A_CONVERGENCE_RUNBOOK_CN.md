@@ -266,7 +266,7 @@ bash scripts/cross_stage/submit_A_step2.sh status
 
 ## 5. 收敛对照 probe（2026-09-23 增补，与 truth-dose 并行）
 
-背景：E95/E100 的 A1 已经显示 Δθ cosine（~0.007）与 50 epoch 时相同，且 E95↔E100 的 cell 层真值 Spearman 为 −0.32。本 probe 只回答一个机制问题：**缩小步长能否让 eval 梯度真正变小**。它不重跑 attack、LOO、truth 或 damping，不产生任何 L3 结论。
+背景：E95/E100 的 A1 中 Δθ cosine 中位数仍约 0.007。本 probe 只回答一个机制问题：**缩小步长能否让 eval 梯度真正变小**。它不重跑 attack、LOO、truth 或 damping，不产生任何 L3 结论。
 
 ### 5.1 设计
 
@@ -283,34 +283,55 @@ decay 是新的试验配方、新的预算；它的终点不能叫“原训练�
 
 - 主读数是 **eval CE + L2 全训练集梯度范数**（式 56 的 Hessian 对应的目标），每个 epoch 记录；dropout-MC 平均梯度（16 reps）每 5 个 epoch 记录一次。
 - **参数不动不等于收敛**：lr 很小时参数自然动得少。判据只看梯度列。
-- 探索性梯度目标 `1e-3`（低于 ‖b_p‖ 的 0.003–0.02）。尾窗中位数达到才算“达到目标”，单个低值或 loss 变平都不算。
-- 若 decay 梯度停在目标之上、而 dropout-MC 平均梯度同量级，按“dropout 训练目标与 eval Hessian 目标不匹配”如实报告，不许悄悄关 dropout。
+- 探索性梯度目标 `1e-3`。末 10 个 epoch 的完整梯度窗口中位数达到，只标记“达到探索性目标”，不能认证驻点。与 ‖b_p‖ 的比例需用当前 checkpoint 数据另行核对。
+- eval 梯度和 dropout-MC 梯度都大，不能直接推出目标不匹配。只有 dropout 期望梯度较小、eval 梯度持续较大，且差异超出 MC 估计噪声，才支持该解释。报告保留 MC 梯度离散度和均值向量 RMS 误差估计，它不是梯度范数的置信区间。不许悄悄关闭 dropout。
 - baseline probe 本身证明不了 L3 改善。若梯度判据通过，下一步才是小面板（seeds 42/43 × patients 807/2085）的 LOO：baseline、full、dose01 各自从**自己的** E100 状态用同一冻结配方续训到共同终点——那是单独审批的另一步。
 
-### 5.3 提交（需要人工批准记录）
+### 5.3 隔离安装与分步提交
+
+E95/E100 的 frozen attempt 锁定 commit `3231a195`，不要升级 `~/oct2-exp-a`。
+修订包的安装器从它创建独立 clone `~/oct2-exp-a-lrprobe`，不修改源目录或原 baseline。
+独立 clone 保留相同分支名，以符合已有的 preflight 契约，但 Git refs 和 objects 不共享。
+完整安装、上传和提交命令见交付包 `README_DELTA_CN.md`。
 
 ```bash
-cd ~/oct2-exp-a
+cd ~/oct2-exp-a-lrprobe
 export OCT_BASELINE_ROOT=$HOME/oct2-calibration-v4
 export OCT_RUNS_ROOT=$HOME/oct2-pathway2-runs/A
 export OCT_DATA_DIR=/u/yli103/oct2/data
 export OCT_A_STEP1_ROOT=$HOME/oct2-pathway2-runs/A/convergence_E100_20260918T111502
 
-bash scripts/cross_stage/submit_A_lr_probe.sh "advisor approved decay probe <日期/渠道>"
+read -r -p '填写真实的 decay probe 确认记录（确认人、日期、范围）: ' OCT_A_LR_NOTE
+OCT_A_LR_OUT="$(bash scripts/cross_stage/submit_A_lr_probe.sh prepare "$OCT_A_LR_NOTE")"
+export OCT_A_LR_OUT
+bash scripts/cross_stage/submit_A_lr_probe.sh test "$OCT_A_LR_OUT"
+bash scripts/cross_stage/submit_A_lr_probe.sh status "$OCT_A_LR_OUT"
 ```
 
-批准备注为必填并写入 `submission.txt`。脚本提交一个 GPU 测试门（`test_A_lr_continuation.py` + `test_A_convergence.py`），`afterok` 后一个 `0-9%4` array（seed × arm），每个任务约 30–60 分钟，`--time 2h`。
+准备命令只写 `probe_config.json` 和输入指纹，不提交 GPU。确认记录必须真实，不要把未发生的学长批准写成已批准。
+`test` 只提交一个 GPU 测试，包含真实训练逻辑的合成小数据恢复/配对测试、报告检查与提交门测试。
+测试必须有匹配的成功标记，且 sacct 为 COMPLETED 0:0，再手动执行：
+
+```bash
+bash scripts/cross_stage/submit_A_lr_probe.sh run "$OCT_A_LR_OUT" --max-parallel 2
+```
+
+这时才提交 `0-9%2` array（seed × arm），每任务 1 GPU、48 GB、2 小时上限。耗时需看 Delta 实测，不能把上限写成预计耗时。
+默认并发 2，便于与两个 truth-dose 作业共存；全部作业的全局并发仍需自行核对。`--max-parallel` 可选 1..4。
+重复调用 test/run 会拒绝，不会重新提交。若 sbatch 返回异常，先查队列和锁文件，不要自动删除锁或重试。
 
 完成后：
 
 ```bash
-python3 scripts/cross_stage/23_A_lr_report.py --root <submission.txt 中的 OUT>
+python3 scripts/cross_stage/23_A_lr_report.py --root "$OCT_A_LR_OUT"
 ```
 
-输出 `report/lr_probe_curves.png`（每个分支一种颜色、虚线为探索性目标、× 为 dropout-MC 梯度）、`probe_summary.json` 和 `REPORT.md`。报告只描述，不选点、不解锁任何下游步骤。
+默认要求 seeds 42..46 × control/decay 共十条完整结果，epoch 连续、输入/数据/代码/epoch order/RNG 配对通过才生成正式报告。`--allow_incomplete` 仅用于调试，会明确标记 incomplete 并禁用达到目标的判断。
+输出 `report/lr_probe_curves.png`、PDF、`probe_summary.json` 和 `REPORT.md`。报告只描述，不选点、不解锁任何下游步骤。
 
-### 5.4 精确性保证（本地已测）
+### 5.4 精确性检查与验证边界
 
-- control 分支续训与“从头训 140 epoch”逐位相同（参数、Adam state、RNG 指纹）。
-- decay 分支把 schedule 设成基础 lr 时与 control 逐位相同——两臂共享的随机流是精确配对。
-- 恢复时核对 RNG 指纹与 Adam state；Step-1 manifest 非 complete/replay_exact、resume epoch 无 checkpoint、schedule 长度不符、输出目录重叠均直接拒绝。
+- GPU 测试使用缩小 epoch 数的合成数据，检查 control 续训与相同总预算从头训练的参数、Adam state 和 RNG 逐位一致；它不声称已在真实 OCT 上从头重跑至 140 epoch。
+- 同一测试检查：将 decay schedule 设为基础 lr 时，终点与 control 逐位一致。
+- 正式运行从真实 E100 checkpoint 恢复，并核对 Adam/RNG、原 Step-1 的数据字节指纹、config 和 split。非 complete/replay_exact、checkpoint 不存在、schedule 长度不符、输出目录重叠均拒绝。
+- 修订版在交付环境通过报告/提交器的 CPU 回归测试与语法检查。交付环境没有 PyTorch/GPU，因此训练配对测试需由 Delta 的独立 GPU 测试任务验收，成功前不能提交正式 array。

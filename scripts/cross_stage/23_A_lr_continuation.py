@@ -21,9 +21,9 @@ objective whose Hessian Eq. 56 inverts), NOT the parameter update: with a tiny
 learning rate the parameters move little even far from a stationary point.
 A pre-declared exploratory gradient target (default 1e-3) is recorded, but a
 single low value never certifies convergence.  Training runs with dropout
-while the gradient is measured in eval mode; if the decay arm stalls at a
-gradient far above target, report that objective mismatch instead of silently
-changing dropout.
+while the gradient is measured in eval mode. Stalling above target does not
+identify a cause. Compare the dropout mean gradient and its MC uncertainty
+before interpreting a possible objective mismatch; never silently change dropout.
 """
 from __future__ import annotations
 
@@ -31,6 +31,7 @@ import argparse
 import importlib.util
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import platform
@@ -71,7 +72,7 @@ def parse_schedule(text):
     for part in text.split(","):
         length, lr = part.strip().split("@")
         length, lr = int(length), float(lr)
-        if length < 1 or not lr > 0:
+        if length < 1 or not math.isfinite(lr) or not lr > 0:
             raise ValueError(f"Invalid schedule segment: {part}")
         segments.append((length, lr))
     return segments
@@ -91,9 +92,10 @@ def lr_for_offset(offset, base_lr, segments):
 
 def source_files():
     return [HERE / name for name in (
-        "05_end_to_end_patient_loo_pilot.py", "11_stage1_diagnostics.py",
+        "05_end_to_end_patient_loo_pilot.py", "07_cross_stage_score_ladder.py", "11_stage1_diagnostics.py",
         "stage1_diagnostic_core.py", "20_A_convergence_curve.py",
-        "23_A_lr_continuation.py", "23_A_lr_report.py",
+        "23_A_lr_continuation.py", "23_A_lr_report.py", "23_A_lr_control.py",
+        "23_A_lr_probe.slurm", "23_A_lr_tests.slurm", "submit_A_lr_probe.sh",
     )] + [REPO / "experiments/pathway2/frozen_baseline.json"]
 
 
@@ -112,6 +114,7 @@ def load_resume_state(step1_dir, spec, resume, pilot):
     checkpoint = step1_dir / "checkpoints" / f"epoch{resume:03d}.pt"
     payload = legacy.load_payload(checkpoint, pilot)
     md = payload["metadata"]
+    legacy.assert_equal(md["run"], spec["name"], "Checkpoint run mismatch")
     legacy.assert_equal(int(md["epoch"]), resume, "Checkpoint epoch mismatch")
     legacy.assert_equal(int(md["seed"]), spec["seed"], "Checkpoint seed mismatch")
     legacy.assert_equal(int(md["extended_epochs"]), step1_epochs, "Checkpoint horizon mismatch")
@@ -238,6 +241,8 @@ def main(argv=None):
         raise RuntimeError("CUDA required for this invocation")
     if args.extra_epochs < 2:
         raise ValueError("--extra_epochs must be at least 2")
+    if not math.isfinite(args.gradient_target) or args.gradient_target <= 0:
+        raise ValueError("--gradient_target must be finite and positive")
     if args.checkpoint_epochs is None:
         args.checkpoint_epochs = sorted({args.resume_epoch + args.extra_epochs // 2,
                                          args.resume_epoch + args.extra_epochs})
@@ -289,12 +294,19 @@ def main(argv=None):
     output = out_root / f"{spec['name']}_{arm}"
     output.mkdir(parents=True, exist_ok=False)
     inputs = {str(path): legacy.sha(path) for path in
-              [checkpoint, step1_dir / "manifest.json",
+              [checkpoint, step1_dir / "manifest.json", step1_dir / "input_sha256.json",
+               step1_dir / "dataset_fingerprint.json",
                full / "experiment_config.json", full / "splits/fresh_patient_split.json"]}
     legacy.write_json(output / "input_sha256.json", inputs)
     source_sha = {str(path.relative_to(REPO)): legacy.sha(path) for path in source_files()}
     legacy.write_json(output / "source_sha256.json", source_sha)
     dataset_before = conv.dataset_fingerprint(context["X"], context["y"])
+    if dataset_before != legacy.read_json(step1_dir / "dataset_fingerprint.json"):
+        raise RuntimeError("Loaded dataset differs from the dataset used for the Step-1 checkpoint")
+    step1_inputs = legacy.read_json(step1_dir / "input_sha256.json")
+    for path in (full / "experiment_config.json", full / "splits/fresh_patient_split.json"):
+        if step1_inputs.get(str(path)) != legacy.sha(path):
+            raise RuntimeError(f"Input differs from the Step-1 checkpoint provenance: {path}")
     legacy.write_json(output / "dataset_fingerprint.json", dataset_before)
     manifest = {
         "schema": SCHEMA, "status": "running", "run": f"{spec['name']}_{arm}", "base_run": spec["name"],

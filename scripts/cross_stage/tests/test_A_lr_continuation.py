@@ -151,7 +151,7 @@ class LrContinuationTests(unittest.TestCase):
             self.assertLess(sum(r["epoch_update_norm"] for r in dcurve[1:]),
                             sum(r["epoch_update_norm"] for r in curve[1:]))
             # Report runs on the pair and marks the exploratory target without selecting anything.
-            report.main(["--root", str(probes), "--tail", "2"])
+            report.main(["--root", str(probes), "--tail", "2", "--seeds", "42"])
             summary = json.loads((probes / "report/probe_summary.json").read_text())
             self.assertEqual(sorted(summary["per_run"]), ["shadow0_seed42_control", "shadow0_seed42_decay"])
             self.assertTrue(summary["pairing_complete"])
@@ -181,6 +181,12 @@ class LrContinuationTests(unittest.TestCase):
             manifest_path.write_text(good)
             with self.assertRaises(RuntimeError):
                 run_probe(fx, step1.parent, fx["full"] / "inside", "control")       # output overlap
+            fingerprint_path = step1 / "dataset_fingerprint.json"
+            fingerprint = legacy.read_json(fingerprint_path)
+            fingerprint["X_sha256"] = "changed"
+            legacy.write_json(fingerprint_path, fingerprint)
+            with self.assertRaisesRegex(RuntimeError, "dataset differs"):
+                run_probe(fx, step1.parent, Path(td) / "runs/A/bad_dataset", "control")
 
 
 if __name__ == "__main__":
