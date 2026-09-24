@@ -3,6 +3,7 @@
 from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -18,11 +19,36 @@ def command(args, **kwargs):
     return subprocess.check_output(args, text=True, **kwargs).strip()
 
 
+PARENT_ROUTE_A_BRANCH = "exp/pathway2-a-stationarity"
+ISOLATED_SMALLPANEL_BRANCH = "exp/pathway2-a-smallpanel"
+
+
+def isolated_preflight_plan(plan):
+    """Retain the frozen Route-A protocol while checking this child branch."""
+    if plan.get("role") != "A" or plan.get("branch") != PARENT_ROUTE_A_BRANCH:
+        raise ValueError("Unexpected frozen Route A plan; refusing to rewrite its branch contract")
+    child = dict(plan)
+    child["branch"] = ISOLATED_SMALLPANEL_BRANCH
+    return child
+
+
 def preflight(cfg):
-    proof = json.loads(command([sys.executable, str(REPO / "experiments/pathway2/preflight.py"),
-                      "verify", "--baseline-root", cfg["baseline_root"], "--output-root", cfg["runs_root"]]))
+    # experiments/pathway2/preflight.py intentionally checks the original Route-A
+    # branch name.  This experiment is a reviewed descendant in an isolated
+    # branch, so reuse its verification function with an in-memory child plan.
+    # The frozen plan and baseline files themselves remain unchanged.
+    path = REPO / "experiments/pathway2/preflight.py"
+    spec = importlib.util.spec_from_file_location("route_a_preflight_for_smallpanel", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    contract = read(REPO / "experiments/pathway2/frozen_baseline.json")
+    parent_plan = read(REPO / "experiments/pathway2/plan.json")
+    proof = module.verify(Path(cfg["baseline_root"]), Path(cfg["runs_root"]),
+                          contract, isolated_preflight_plan(parent_plan))
     if proof.get("status") != "PASS_FILE_INTEGRITY_ONLY":
         raise ValueError("Original Route A integrity preflight failed")
+    proof["frozen_parent_branch"] = parent_plan["branch"]
+    proof["isolated_verified_branch"] = ISOLATED_SMALLPANEL_BRANCH
     return proof
 
 

@@ -15,6 +15,17 @@ report=load('report_test','24_A_smallpanel_report.py')
 control=load('control_test','24_A_smallpanel_control.py')
 
 class Contracts(unittest.TestCase):
+    def test_isolated_preflight_keeps_parent_plan_immutable(self):
+        parent = {"role": "A", "branch": "exp/pathway2-a-stationarity", "x": [1]}
+        child = control.isolated_preflight_plan(parent)
+        self.assertEqual(parent["branch"], "exp/pathway2-a-stationarity")
+        self.assertEqual(child["branch"], "exp/pathway2-a-smallpanel")
+        self.assertEqual(child["x"], [1])
+
+    def test_isolated_preflight_refuses_unexpected_parent(self):
+        with self.assertRaisesRegex(ValueError, "Unexpected frozen Route A plan"):
+            control.isolated_preflight_plan({"role": "A", "branch": "another-branch"})
+
     def test_panel_is_fixed_40_unique_cells(self):
         self.assertEqual(len(set(c.expected_cells())),40)
         self.assertEqual([c.expected_cells()[i] for i in (0,2,4,6)],

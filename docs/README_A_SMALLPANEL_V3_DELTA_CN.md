@@ -8,7 +8,7 @@ B 为 807（DME）、2085（DRUSEN）× seed 42–46 × full/dose01 × control/d
 
 C 只读取五个 decay E140 baseline，做 MC=128 的 dropout 梯度均值复核。报告向量差范数、余弦、均值向量 RMS 标准误。diff/error 是描述性比值，不是显著性检验。
 
-本地 CPU 验证使用 PyTorch 2.8.0+cpu。19 项测试通过，包含 synthetic 2→4 epoch 轨迹、删除权重梯度 autograd 对照、完整 40-cell 报告、缺失/重复/篡改检测、MC 计算和手动提交门。不能据此声称真实 OCT E100/E140 已通过。
+本地 CPU 验证使用 PyTorch 2.8.0+cpu。21 项测试通过，包含 synthetic 2→4 epoch 轨迹、删除权重梯度 autograd 对照、完整 40-cell 报告、缺失/重复/篡改检测、独立分支 preflight、MC 计算和手动提交门。不能据此声称真实 OCT E100/E140 已通过。
 
 ## 安装
 
@@ -63,7 +63,7 @@ bash scripts/cross_stage/submit_A_smallpanel.sh test "$OCT_A_SP_OUT"
 bash scripts/cross_stage/submit_A_smallpanel.sh status "$OCT_A_SP_OUT"
 ```
 
-测试作业先运行 19 项代码测试，再在真实 OCT 数据上重放 seed42、两位患者 × 两种 dose 的四条 E100 轨迹。作业必须 `COMPLETED 0:0`，日志末尾有 `A_SMALLPANEL_GPU_AND_REAL_E100_TESTS_PASSED`，且匹配的 `gpu_tests_passed.json` 存在。GPU test 不自动提交后续 array。
+测试作业先运行 21 项代码测试，再在真实 OCT 数据上重放 seed42、两位患者 × 两种 dose 的四条 E100 轨迹。作业必须 `COMPLETED 0:0`，日志末尾有 `A_SMALLPANEL_GPU_AND_REAL_E100_TESTS_PASSED`，且匹配的 `gpu_tests_passed.json` 存在。GPU test 不自动提交后续 array。
 
 ## 测试通过后单独提交 B 与 C
 
