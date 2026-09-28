@@ -1,0 +1,8 @@
+{
+  "base_commit": "ca332634a5f50860cea1eb9c1839755232b9434b",
+  "input_package": "OCT_objective_polish_20260928.tar.gz",
+  "input_package_sha256": "fae2f537a0a1eb2c6675e386480d6a08c39f051fdd9510cecd14e3c576538f0e",
+  "relationship": "Reviewed and corrected adaptation. This is not the original package.",
+  "audit_snapshot_source": "d051721b3afa735cee6ff27e342d58feab1ac2a3:experiments/pathway2_stationarity/audit_torch.py",
+  "scope": "baseline polish only; no legacy source modifications"
+}
