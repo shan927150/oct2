@@ -18,12 +18,41 @@ def prepare(a):
     cells = [x.copy() for x in c['audited_cells'] if x['arm'] == 'decay' and x['epoch'] == 140]
     if sorted(x['seed'] for x in cells) != [42, 44]:
         raise ValueError('Expected audited decay E140 seeds 42 and 44')
+    if a.retry_from:
+        previous = Path(a.retry_from).resolve()
+        old = rt.read(previous / 'config.json')
+        oldhash = rt.sha(previous / 'config.json')
+        if ((previous / 'config.sha256').read_text().strip() != oldhash or
+                old['git_commit'] != '3ea683c2ab115b6937d0d1b2a5834bebfd015b0d' or
+                old['schema'] != SCHEMA or old['audit_config_sha256'] != c['audit_config_sha256'] or
+                old['cells'] != cells or old['out'] != str(previous)):
+            raise ValueError('Recovery requires the original, unchanged v2 attempt')
+        rt.disjoint(c['out'], previous)
+        rt.verify_hashes({**old['input_sha256'], **old['source_sha256']})
+        for name in ('smoke', 'seed42_decay_E140'):
+            rt.completed(previous / name, oldhash)
+        if (previous / 'seed44_decay_E140/complete.json').exists():
+            raise ValueError('Seed44 already has a completion marker; inspect before retrying')
+        for path in (previous / 'config.json', previous / 'config.sha256',
+                     previous / 'smoke/complete.json', previous / 'seed42_decay_E140/complete.json'):
+            c['input_sha256'][str(path)] = rt.sha(path)
+        cells = [x for x in cells if x['seed'] == 44]
+        c['recovery_of'] = str(previous)
+    for cell in cells:
+        path = Path(c['audit']) / cell['name'] / 'gradient_vectors.npz'
+        marker = rt.read(path.parent / 'complete.json')
+        if rt.sha(path) != marker['output_sha256']['gradient_vectors.npz']:
+            raise ValueError('Prior audited gradient vectors changed')
+        c['input_sha256'][str(path)] = rt.sha(path)
     c.update(cells=cells, slurm_time='02:00:00',
         lbfgs=dict(max_outer=a.max_outer, eval_budget=a.eval_budget,
                    history_size=a.history_size, diagnostic_every=a.diagnostic_every),
         rho_target=.1, rho_alpha=.1,
         request_note='User requested two isolated experiment branches on 2026-09-28; baseline polish only.',
         design='E140 decay -> eval CE+L2 full-batch LBFGS; fresh optimizer; no damping/deletion/attack')
+    if a.retry_from and old['lbfgs'] != c['lbfgs']:
+        raise ValueError('Recovery must keep the original optimizer budgets and history settings')
+    c['entry_audit'] = 'Legacy cuDNN TF32-on replay + strict TF32-off repeat and FP64 agreement'
     rt.save_config(c)
 
 
@@ -32,6 +61,7 @@ def gpu(a):
     import torch
     import polish_core as pc
     from audit_torch import snapshot
+    from entry_audit import verify_endpoint
     c = rt.config(a.out, SCHEMA)
     if not 0 <= a.index < len(c['cells']):
         raise ValueError('Index out of bounds')
@@ -50,8 +80,8 @@ def gpu(a):
     kwargs = dict(X=ctx['X'], y=ctx['y'], indices=ctx['train'],
                   patient_rows=ctx['patient_rows'], batch=c['batch'], wd=c['weight_decay'])
 
-    def snap(m, dropout=False):
-        return snapshot(m, **kwargs, dropout=dropout)
+    def snap(m, dropout=False, check_identity=False):
+        return snapshot(m, **kwargs, dropout=dropout, check_identity=check_identity)
 
     def double_snap(m):
         m64 = copy.deepcopy(m).double()
@@ -59,14 +89,16 @@ def gpu(a):
         del m64
         return info, vectors
 
-    before32, v032 = snapshot(model, **kwargs, check_identity=a.smoke)
-    if abs(before32['ce'] - cell['reference_eval_ce']) > 1e-8 + 5e-5 * abs(cell['reference_eval_ce']):
-        raise ValueError('Loaded endpoint does not reproduce audited eval CE')
-    before64, v064 = double_snap(model)
-    if a.smoke:
-        again, vv = snap(model)
-        if before32['ce'] != again['ce'] or not np.array_equal(v032, vv):
-            raise ValueError('Deterministic repeated eval failed')
+    with np.load(Path(c['audit']) / cell['name'] / 'gradient_vectors.npz') as z:
+        if not np.array_equal(z['patient_ids'], c['patients']):
+            raise ValueError('Prior audit patient ordering differs')
+        expected_vectors = z['eval_vectors'].copy()
+    before32, v032, before64, v064, entry = verify_endpoint(
+        model, snap, cell['reference_eval_ce'], expected_vectors,
+        lambda report: rt.write(dest / 'entry_audit.json', report), check_identity=a.smoke)
+    print('ENTRY_AUDIT ' + str(dest / 'entry_audit.json') +
+          ' precision_mismatch_explains_old_failure=' +
+          str(entry['precision_mismatch_explains_old_failure']), flush=True)
     options = dict(c['lbfgs'])
     if a.smoke:
         options.update(max_outer=2, eval_budget=12, diagnostic_every=1)
@@ -95,7 +127,7 @@ def gpu(a):
         g_before_fp64=float(np.linalg.norm(v064[0])), g_after_fp64=float(np.linalg.norm(v164[0])),
         objective_before_fp64=before64['objective'], objective_after_fp64=after64['objective'],
         objective_before_fp32=before32['objective'], objective_after_fp32=after32['objective'],
-        rho_rows=rows, smoke=a.smoke,
+        rho_rows=rows, smoke=a.smoke, entry_audit=entry,
         interpretation='FP64 verification is not a rigorous error bound or an IF-validity certificate')
     if not np.isfinite(result['g_after_fp64']):
         raise RuntimeError('Non-finite final audit')
@@ -127,10 +159,12 @@ def collect(a):
     rep = Path(c['out']) / 'report'
     rep.mkdir(exist_ok=False)
     rt.csv_write(rep / 'polish_summary.csv', [dict(seed=x['cell']['seed'], **{
-        k: v for k, v in x.items() if k not in ('cell', 'rho_rows', 'interpretation')}) for x in values])
+        k: v for k, v in x.items() if k not in ('cell', 'rho_rows', 'interpretation', 'entry_audit')}) for x in values])
     rt.csv_write(rep / 'rho.csv', [r for x in values for r in x['rho_rows']])
     lines = ['# Baseline objective polish', '',
-        'Fixed shadow 3, N=2045, eval CE + 1e-5/2 ||theta||². Seeds 42/44.',
+        'Fixed shadow 3, N=2045, eval CE + 1e-5/2 ||theta||². Seeds: ' + str([x['seed'] for x in c['cells']]),
+        'Entry audit reproduces the legacy TF32-on reference before TF32-off optimization.',
+        'This report contains only this attempt. Previous successful seeds remain in their original output.',
         'FP32 optimization; both g and patient b recomputed in FP64 at both endpoints.',
         'The closure budget excludes diagnostic snapshots and endpoint FP64 verification.',
         'Small rho and numerical agreement are diagnostics, not a stationarity/Hessian/IF theorem.',
@@ -151,6 +185,7 @@ def main():
     q.add_argument('--eval-budget', type=int, default=500)
     q.add_argument('--history-size', type=int, default=20)
     q.add_argument('--diagnostic-every', type=int, default=10)
+    q.add_argument('--retry-from', help='Original v2 output; preserve seed42 and retry only seed44')
     a = p.parse_args()
     if a.action == 'submit':
         rt.submit(a, SCHEMA, 'pol2')

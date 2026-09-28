@@ -1,5 +1,9 @@
 # 同目标 baseline polish v2
 
+本分支现为独立 recovery 分支，父提交是原 v2 的 `3ea683c`。
+恢复 seed44 的入口精度检查见 `RECOVERY_CN.md`。使用 `--retry-from` 时只跑 seed44，
+下面的双 seed 首轮说明保留为原实验设计记录。
+
 本分支从 ca332634a5f50860cea1eb9c1839755232b9434b 创建，仅新增本目录。
 独立于 stable-training 分支，也不改变原 stationarity 分支。
 

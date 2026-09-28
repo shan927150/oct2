@@ -55,6 +55,65 @@ class ControllerTests(unittest.TestCase):
 
 @unittest.skipIf(torch is None, 'PyTorch unavailable; Delta smoke requires it')
 class MathTests(unittest.TestCase):
+    def test_entry_replays_legacy_and_verifies_strict_precision(self):
+        from entry_audit import verify_endpoint
+        m = nn.Linear(1, 1)
+        reports = []
+        old = (torch.backends.cuda.matmul.allow_tf32, torch.backends.cudnn.allow_tf32)
+        def snap(model, **kwargs):
+            ce = .002 if torch.backends.cudnn.allow_tf32 else .0022
+            return dict(ce=ce, objective=ce+.01), np.ones((3, 2))
+        *_, report = verify_endpoint(m, snap, .002, np.ones((3, 2)), reports.append)
+        self.assertEqual(report['status'], 'passed')
+        self.assertTrue(report['precision_mismatch_explains_old_failure'])
+        self.assertEqual(len(reports), 1)
+        self.assertEqual(old, (torch.backends.cuda.matmul.allow_tf32, torch.backends.cudnn.allow_tf32))
+
+    def test_entry_rejects_wrong_reference_without_loosening_tolerance(self):
+        from entry_audit import verify_endpoint
+        reports = []
+        def snap(model, **kwargs):
+            return dict(ce=.003, objective=.013), np.ones((3, 2))
+        with self.assertRaisesRegex(ValueError, 'legacy_ce_matches'):
+            verify_endpoint(nn.Linear(1, 1), snap, .002, np.ones((3, 2)), reports.append)
+        self.assertEqual(reports[0]['status'], 'failed')
+        self.assertAlmostEqual(reports[0]['ce_tolerance'], 1e-8 + 5e-5*.002)
+
+    def test_entry_rejects_bad_vectors_and_strict_replay(self):
+        from entry_audit import verify_endpoint
+        for bad in ('legacy', 'repeat', 'fp64'):
+            reports, calls = [], []
+            def snap(model, **kwargs):
+                calls.append(None)
+                vectors = np.ones((3, 2))
+                if ((bad == 'legacy' and len(calls) == 1) or
+                    (bad == 'repeat' and len(calls) == 3) or
+                    (bad == 'fp64' and len(calls) == 4)):
+                    vectors *= 2
+                return dict(ce=.002, objective=.012), vectors
+            with self.assertRaises(ValueError):
+                verify_endpoint(nn.Linear(1, 1), snap, .002, np.ones((3, 2)), reports.append)
+            self.assertEqual(reports[0]['status'], 'failed')
+
+    def test_entry_actual_snapshot_preserves_model_grads_modes_rng(self):
+        from entry_audit import verify_endpoint
+        m,X,y,idx,patients = self.toy()
+        m.train()
+        for p in m.parameters():
+            p.grad = torch.full_like(p, .7)
+        state, rng = copy.deepcopy(m.state_dict()), torch.get_rng_state().clone()
+        grads = [p.grad.clone() for p in m.parameters()]
+        def snap(model, **kwargs):
+            return snapshot(model,X,y,idx,patients,7,.01,**kwargs)
+        ref, vectors = snap(m)
+        reports=[]
+        verify_endpoint(m, snap, ref['ce'], vectors, reports.append, check_identity=True)
+        self.assertEqual(reports[0]['status'], 'passed')
+        self.assertTrue(m.training)
+        self.assertTrue(torch.equal(rng, torch.get_rng_state()))
+        self.assertTrue(all(torch.equal(v,m.state_dict()[k]) for k,v in state.items()))
+        self.assertTrue(all(torch.equal(g,p.grad) for g,p in zip(grads,m.parameters())))
+
     def test_real_cnn_fp64_and_checkpoint_roundtrip(self):
         import importlib.util
         spec=importlib.util.spec_from_file_location('polish_cnn_test',rt.REPO/'src/models.py')

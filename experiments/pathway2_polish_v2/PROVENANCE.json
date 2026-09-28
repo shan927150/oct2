@@ -4,5 +4,9 @@
   "input_package_sha256": "fae2f537a0a1eb2c6675e386480d6a08c39f051fdd9510cecd14e3c576538f0e",
   "relationship": "Reviewed and corrected adaptation. This is not the original package.",
   "audit_snapshot_source": "d051721b3afa735cee6ff27e342d58feab1ac2a3:experiments/pathway2_stationarity/audit_torch.py",
-  "scope": "baseline polish only; no legacy source modifications"
+  "scope": "baseline polish only; no legacy source modifications",
+  "recovery_parent": "3ea683c2ab115b6937d0d1b2a5834bebfd015b0d",
+  "recovery_reason": "seed44 failed before optimization while comparing TF32-off CE to legacy TF32-on reference",
+  "recovery_evidence_status": "Precision-policy difference established from code; causal explanation requires GPU entry_audit.json",
+  "recovery_contract": "Original threshold retained for legacy replay; additional strict repeat and FP64 checks; retry only seed44 in a new output"
 }
