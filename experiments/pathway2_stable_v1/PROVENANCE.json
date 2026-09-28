@@ -1,0 +1,9 @@
+{
+  "base_commit": "ca332634a5f50860cea1eb9c1839755232b9434b",
+  "input_package": "oct2.tar.gz",
+  "input_package_sha256": "2b1996d2fcb630c3fa56f222646f2957622892d207f4aabeb7e4540274dfc1d2",
+  "recipe_sources": ["src/models.py", "src/config.py", "scripts/cross_stage/05_end_to_end_patient_loo_pilot.py"],
+  "relationship": "Port of mentor schedule and parameter EMA. Preserves reviewed deterministic pool, fixed-mask intervention and frozen split.",
+  "audit_snapshot_source": "d051721b3afa735cee6ff27e342d58feab1ac2a3:experiments/pathway2_stationarity/audit_torch.py",
+  "scope": "Stage 1 baseline and paired dose diagnostics only; no Stage 2 retraining or LDS"
+}
