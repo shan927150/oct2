@@ -21,6 +21,9 @@ def context(c, seed):
     score = module('lds_score_ladder', rt.REPO/'scripts/cross_stage/07_cross_stage_score_ladder.py')
     stable = module('lds_stable_core', rt.REPO/'experiments/pathway2_stable_v1/stable_core.py')
     d = make_design(ctx['train'], ctx['test'], ctx['groups'], ctx['y'], c['m'], c['retain'], c['subset_seed'])
+    smoke_design=Path(c['out'])/'smoke/design.json'
+    if smoke_design.exists() and rt.read(smoke_design)!=d:
+        raise ValueError('Patient masks/query weights differ from the completed smoke')
     return ctx, pilot, conv, score, stable, d
 
 
