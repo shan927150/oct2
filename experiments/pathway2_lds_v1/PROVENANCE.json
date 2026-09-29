@@ -1,0 +1,17 @@
+{
+  "parent_commit": "b14b69e7652444204595687032a2f415fe968c44",
+  "new_branch": "exp/pathway2-lds-formula-v1",
+  "legacy_base_commit": "ca332634a5f50860cea1eb9c1839755232b9434b",
+  "inherited_stable_kernel_sha256": "e4c9c52aa44c8716e55c6a47b1d720c07f715521d62f7a5319554a361c35ff08",
+  "theory_pdf_sha256": "041dcec72788258a35d643f91793e0b8c8f0e8b1fb2c5bdfd9e718539ebf5e14",
+  "scope": "Only additions under experiments/pathway2_lds_v1. Raw Stage-1 LDS and separate recentered-proximal local response; full attack LDS deferred.",
+  "reference_seeds": [
+    42,
+    43,
+    44
+  ],
+  "default_m": 8,
+  "gamma": 1.0,
+  "submitted_gpu_jobs": false,
+  "github_pushed_by_assistant": false
+}
