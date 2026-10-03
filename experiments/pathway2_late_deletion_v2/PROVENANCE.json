@@ -1,0 +1,17 @@
+{
+  "base_commit": "c4880c9ea1a527e4db004b2199b48e21b6426bf7",
+  "original_archive_sha256": "c9b945d753602bb97bea992d0e85adc8cd4eb7660895170a2c95fb664ac02d5c",
+  "inherited_kernel": "experiments/pathway2_stable_v1/stable_core.py",
+  "inherited_loader": "experiments/pathway2_lds_v1/runtime.py",
+  "repaired": [
+    "immutable optimizer restore",
+    "complete state replay",
+    "dataset fingerprint config",
+    "Slurm explicit code path",
+    "atomic separate submission receipts",
+    "terminal zero NA",
+    "stdlib archive"
+  ],
+  "scope": "conditional late downweighting geometry and fixed-query outputs; no IF or attack J",
+  "baseline_config_sha256": "322489b49f403ccd187cfea8d5c3cbeb02cd7e5e6d1808641e2fc6f8fad2fc18"
+}
