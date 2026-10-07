@@ -36,6 +36,6 @@
 
 本版没有提交 Delta 作业。此前连接 `login.delta.ncsa.illinois.edu` 的 DNS 解析失败，无法在这里执行真实 GPU 验收。
 
-GitHub 发布未完成。此前 push 被自动审批拒绝，理由是尚未明确授权把含内部 Delta 路径和运行细节的代码发布到该远程。没有重试 push 或绕过限制。本次以可审阅的 bundle 和增量 patch 交付，Delta 安装不依赖远程 reviewed 分支。
+GitHub 发布未完成。此前 push 被自动审批拒绝，理由是尚未明确授权把含内部 Delta 路径和运行细节的代码发布到该远程。没有重试 push 或绕过限制。本次以可审阅的 bundle 和增量 patch 交付，Delta 安装使用 bundle 中的 reviewed 分支。
 
-下一步按 README 安装新 worktree，先 prepare 和 GPU smoke，再运行原 8 masks 的 seed 扩展与 eq32；γ 先行 pilot 核对数值门槛和成本，再按冻结面板完成正式扫描。新 OUT 与原版 OUT 分开，避免新 mask/输出契约与旧产物混用。
+下一步按本轮聊天中的命令安装新 worktree，先 prepare 和 GPU smoke，再运行原 8 masks 的 seed 扩展与 eq32；γ 先行 pilot 核对数值门槛和成本，再按冻结面板完成正式扫描。新 OUT 与原版 OUT 分开，避免新 mask/输出契约与旧产物混用。
