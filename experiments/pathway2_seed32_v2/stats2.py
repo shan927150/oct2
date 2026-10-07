@@ -73,9 +73,13 @@ def partial_spearman(pred, truth, z):
     return float(a @ b / d) if d else None
 
 
-def lds_block(pred, truth, n_images, seed=20261006, draws=2000):
+def lds_block(pred, truth, n_images, seed=20261006, draws=2000, fitted_on_truth=False):
     """One LDS cell with the size controls that must accompany every LDS."""
-    out = evaluate(pred, truth, seed=seed, draws=draws)
+    if fitted_on_truth:
+        out = dict(spearman=spearman(pred, truth), n_subsets=len(truth),
+                   note='Cross-fitted diagnostic only. CI/p withheld: valid resampling would refit the entire nested ridge procedure.')
+    else:
+        out = evaluate(pred, truth, seed=seed, draws=draws)
     out['residual_spearman_given_images'] = residual_spearman(pred, truth, n_images)
     out['partial_rank_spearman_given_images'] = partial_spearman(pred, truth, n_images)
     return out
@@ -99,6 +103,8 @@ def variance_components(Y):
     """Two-way (subset x seed) decomposition with additive seed intercepts removed."""
     Y = np.asarray(Y, float)
     m, S = Y.shape
+    if m < 2 or S < 2:
+        return dict(noise_variance=None, signal_variance=None, m=m, seeds=S)
     centered = Y - Y.mean(0, keepdims=True)
     resid = centered - centered.mean(1, keepdims=True)
     noise = float((resid ** 2).sum() / ((m - 1) * (S - 1)))
@@ -111,16 +117,17 @@ def se_curve(Y, ks, draws=500, seed=20261006):
     """Standard error of the k-seed subset mean, analytic and resampled."""
     Y = np.asarray(Y, float)
     m, S = Y.shape
-    sd = Y.std(1, ddof=1)
+    sd = Y.std(1, ddof=1) if S > 1 else None
     rng = np.random.default_rng(seed)
     rows = []
     for k in ks:
         fpc = np.sqrt((S - k) / (S - 1)) if S > 1 else 0.
-        analytic = float(np.mean(sd / np.sqrt(k)))
+        analytic = float(np.mean(sd / np.sqrt(k))) if sd is not None else None
         means = np.stack([Y[:, rng.choice(S, k, replace=False)].mean(1) for _ in range(draws)])
         rows.append(dict(k=int(k), analytic_se_mean_over_subsets=analytic,
-                         analytic_se_with_finite_population_correction=float(analytic * fpc),
-                         resampled_sd_of_k_seed_mean=float(means.std(0, ddof=1).mean())))
+                         analytic_se_with_finite_population_correction=float(analytic * fpc) if analytic is not None else None,
+                         resampled_sd_of_k_seed_mean=float(means.std(0, ddof=1).mean()),
+                         note='Fixed-panel sd/sqrt(k) is analytic; resampling all available seeds has zero variation by construction.'))
     return rows
 
 
@@ -142,19 +149,21 @@ def reliability_curve(Y, ks, draws=500, seed=20261006):
                 r = spearman(a, b)
                 if r is not None:
                     rs.append(r)
-                ps.append(float(np.corrcoef(a, b)[0, 1]))
+                if np.ptp(a) and np.ptp(b):
+                    ps.append(float(np.corrcoef(a, b)[0, 1]))
             row.update(split_spearman_mean=float(np.mean(rs)) if rs else None,
                        split_spearman_q025=float(np.quantile(rs, .025)) if rs else None,
                        split_spearman_q975=float(np.quantile(rs, .975)) if rs else None,
-                       split_pearson_mean=float(np.nanmean(ps)))
-        tot = vc['signal_variance'] + vc['noise_variance'] / k
-        row['icc_reliability'] = vc['signal_variance'] / tot if tot > 0 else None
+                       split_pearson_mean=float(np.mean(ps)) if ps else None)
+        tot = None if vc['noise_variance'] is None else vc['signal_variance'] + vc['noise_variance'] / k
+        row['icc_reliability'] = vc['signal_variance'] / tot if tot is not None and tot > 0 else None
+        row['independent_split_available'] = 2 * k <= S
         rows.append(row)
     r1 = rows[0].get('split_spearman_mean') if rows and rows[0]['k'] == 1 else None
     for row in rows:
-        row['spearman_brown_from_k1'] = float(spearman_brown(r1, row['k'])) if r1 is not None else None
+        row['spearman_brown_from_k1'] = float(spearman_brown(r1, row['k'])) if r1 is not None and 0 < r1 <= 1 else None
     return dict(rows=rows, variance_components=vc,
-                note='Split-half Spearman with few subsets is noisy; ICC uses all seeds.')
+                note='Disjoint panels available only at 2k <= S. Spearman-Brown on ranks and ICC are model-based heuristics, not measured k=S repeatability; no extrapolation from nonpositive r1.')
 
 
 def lds_curve(truth, predictors, ks, draws=300, seed=20261006):
@@ -190,23 +199,40 @@ def _standardized_ranks(A):
 
 
 def per_query_lds(pred, truth, draws=1000, seed=20261006):
-    """TRAK-style: Spearman across subsets for every query unit, then average.
+    """Spearman across subsets for every query unit, then average (dot proxy).
 
     pred, truth: [m, Q]. Null: one subset permutation applied to all queries
     jointly (keeps the cross-query dependence). Constant columns -> undefined."""
     pred, truth = np.asarray(pred, float), np.asarray(truth, float)
+    if pred.shape != truth.shape or truth.ndim != 2 or len(truth) < 2:
+        raise ValueError('Expected matching [subset, query] matrices with at least two subsets')
+    if not np.isfinite(pred).all() or not np.isfinite(truth).all():
+        raise ValueError('Nonfinite per-query data')
     m, Q = truth.shape
     zp, okp = _standardized_ranks(pred)
     zt, okt = _standardized_ranks(truth)
     ok = okp & okt
     per = np.where(ok, (zp * zt).sum(0), np.nan)
-    observed = float(np.nanmean(per))
+    observed = float(np.mean(per[ok])) if ok.any() else None
     rng = np.random.default_rng(seed)
     null = np.empty(draws)
     for i in range(draws):
-        null[i] = np.nanmean(np.where(ok, (zp * zt[rng.permutation(m)]).sum(0), np.nan))
-    return dict(per_query=per.tolist(), mean=observed, median=float(np.nanmedian(per)),
+        null[i] = float((zp[:, ok] * zt[rng.permutation(m)][:, ok]).sum(0).mean()) if ok.any() else np.nan
+    boot_rng = np.random.default_rng(seed + 1)
+    boot = []
+    for _ in range(draws):
+        idx = boot_rng.integers(0, m, m)  # same sampled subsets for EVERY query
+        bp, op = _standardized_ranks(pred[idx])
+        bt, ot = _standardized_ranks(truth[idx])
+        valid = ok & op & ot
+        if valid.any():
+            boot.append(float((bp[:, valid] * bt[:, valid]).sum(0).mean()))
+    return dict(per_query=per.tolist(), mean=observed, median=float(np.median(per[ok])) if ok.any() else None,
                 fraction_positive=float(np.mean(per[ok] > 0)) if ok.any() else None, defined=int(ok.sum()),
                 n_queries=Q, n_subsets=m,
-                permutation_p_one_sided=float((1 + np.sum(null >= observed)) / (draws + 1)),
-                null_mean=float(np.mean(null)), null_q95=float(np.quantile(null, .95)))
+                permutation_p_one_sided=float((1 + np.sum(null >= observed)) / (draws + 1)) if ok.any() else None,
+                null_mean=float(np.mean(null)) if ok.any() else None,
+                null_q95=float(np.quantile(null, .95)) if ok.any() else None,
+                bootstrap_ci_conditional_on_seed_panel=np.quantile(boot, [.025, .975]).tolist() if boot else None,
+                bootstrap_defined_draws=len(boot), bootstrap_total_draws=draws,
+                note='Joint subset bootstrap/permutation; queries share trained subsets and are not independent training draws. CI conditional on the seed panel and query set; degenerate columns excluded per draw.')

@@ -9,6 +9,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tarfile
+from contextlib import contextmanager
 
 sys.dont_write_bytecode = True
 os.environ.setdefault('PYTHONDONTWRITEBYTECODE', '1')
@@ -44,6 +45,23 @@ def sha(path):
         for block in iter(lambda: f.read(1 << 20), b''):
             h.update(block)
     return h.hexdigest()
+
+
+@contextmanager
+def lock(path):
+    """Fail closed on duplicate local/Slurm writers, including retry races."""
+    import fcntl
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open('a') as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError('Another writer holds ' + str(path)) from exc
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 def csv_write(path, rows):
@@ -84,11 +102,24 @@ def verify_hashes(items):
             raise ValueError('Frozen file changed: ' + str(p))
 
 
-def completed(dest, config_hash):
+def completed(dest, config_hash, expected_cell=None):
     dest = Path(dest)
     m = read(dest / 'complete.json')
     if m['status'] != 'complete' or m['config_sha256'] != config_hash:
         raise ValueError('Wrong/incomplete result: ' + str(dest))
+    if not m.get('output_sha256'):
+        raise ValueError('Empty output manifest: ' + str(dest))
+    if expected_cell is not None and m.get('cell') != expected_cell:
+        raise ValueError('Result identity mismatch: ' + str(dest))
+    if expected_cell is not None:
+        kind = expected_cell.get('kind')
+        required = {'full': ['result.json', 'interface.npz'], 'subset': ['result.json', 'interface.npz'],
+                    'proxy': ['result.json', 'proxy.npz'], 'score': ['result.json', 'scores.npz'],
+                    'smoke': ['result.json', 'designs.json']}.get(kind, [])
+        if not set(required) <= set(m['output_sha256']):
+            raise ValueError('Required outputs missing from manifest: ' + str(dest))
+    if any(Path(rel).is_absolute() or '..' in Path(rel).parts for rel in m['output_sha256']):
+        raise ValueError('Output manifest escapes its result directory')
     verify_hashes({str(dest / rel): h for rel, h in m['output_sha256'].items()})
     return m
 
@@ -218,5 +249,3 @@ def finish(dest, c, cell, **extra):
     files = {str(p.relative_to(dest)): sha(p) for p in sorted(dest.rglob('*')) if p.is_file()}
     write(dest / 'complete.json', dict(status='complete', config_sha256=sha(Path(c['out']) / 'config.json'),
                                       cell=cell, output_sha256=files, **extra))
-
-

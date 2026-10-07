@@ -183,6 +183,7 @@ class ControllerTests(unittest.TestCase):
         import run
         with tempfile.TemporaryDirectory() as tmp:
             c = self.config(tmp)
+            rt.write(Path(tmp) / 'config.json', c)
             calls = []
             def fake(cmd, **kw):
                 calls.append(cmd)
@@ -253,8 +254,9 @@ class EndToEndTests(unittest.TestCase):
             rt.write(root / 'config.json', c)
             rt.write(root / 'designs.json', dict(base=base, designs=designs))
             (root / 'smoke').mkdir()
+            rt.write(root / 'smoke' / 'designs.json', dict(base=base, designs=designs))
             rt.write(root / 'smoke' / 'result.json', {})
-            rt.finish(root / 'smoke', c, {})
+            rt.finish(root / 'smoke', c, dict(kind='smoke'))
 
             def interface(delta):
                 p = np.full((N + len(test), 4), .1)
@@ -284,23 +286,24 @@ class EndToEndTests(unittest.TestCase):
             for s in seeds:
                 d = root / 'proxy' / f'seed{s}'
                 d.mkdir(parents=True)
-                arrays = {}
+                arrays = dict(train_patient_ids=np.asarray([p['patient'] for p in base['train_patients']]), query_patient_ids=ids)
                 for t in T.TARGETS:
                     arrays[f'proxy_macro_{t}'] = tau + 1e-5 * rng.normal(size=P)
                     arrays[f'proxy_query_{t}'] = aq[:, None] * tau[None, :]
                 np.savez_compressed(d / 'proxy.npz', **arrays)
                 rt.write(d / 'result.json', {})
-                rt.finish(d, c, {})
+                rt.finish(d, c, dict(kind='proxy', seed=s))
             for s in c['score_seeds']:
                 for t in c['score_targets']:
                     d = root / 'score' / f'seed{s}_{t}'
                     d.mkdir(parents=True)
-                    np.savez_compressed(d / 'scores.npz', **{f'tau_gamma{g:g}': tau for g in c['gammas']}, proxy=tau)
+                    np.savez_compressed(d / 'scores.npz', **{f'tau_gamma{g:g}': tau for g in c['gammas'] if g != .03},
+                                        proxy=tau, train_patient_ids=np.asarray([p['patient'] for p in base['train_patients']]))
                     gam = [dict(gamma=g, qualified=g != .03, reasons=[] if g != .03 else ['non-positive curvature'],
                                 true_rel_residual=1e-6, damped_krylov_ritz_min=g - .05,
                                 spearman_if_vs_proxy_148_patients=1. - g / 10) for g in c['gammas']]
                     rt.write(d / 'result.json', dict(gammas=gam, lanczos=dict(steps=20)))
-                    rt.finish(d, c, {})
+                    rt.finish(d, c, dict(kind='score', seed=s, target=t))
             with patch.object(run, 'config', return_value=c):
                 run.collect(SimpleNamespace(out=str(root), allow_partial=False))
             s = rt.read(root / 'report' / 'summary.json')
@@ -311,13 +314,19 @@ class EndToEndTests(unittest.TestCase):
                 self.assertAlmostEqual(eq['deleter_spearman'], eq['retained_sum_spearman'])
                 self.assertAlmostEqual(eq['sign_error_spearman_if_minus_dropped'], -eq['deleter_spearman'])
                 self.assertGreater(s['task5'][design]['raw']['oneminusp']['proxy']['mean'], .9)
-            self.assertTrue(s['task4']['oneminusp']['0.03']['status'].startswith('unsolvable'))
+            self.assertTrue(s['task4']['oneminusp']['0.03']['status'].startswith('unqualified'))
             self.assertEqual(s['task4']['oneminusp']['0.3']['status'], 'solved')
             self.assertIsNone(s['task2_3']['pilot8']['raw']['brier']['deleter_equivalence'])
             for name in ('fig_task1_pilot8_raw.png', 'fig_task3_size.png', 'fig_task4_gamma.png', 'fig_task5_per_query.png',
                          'REPORT_CN.md', 'table_lds.csv'):
                 self.assertTrue((root / 'report' / name).exists(), name)
             self.assertTrue(Path(str(root) + '.report.tar.gz').exists())
+            self.assertEqual(s['same_seed_design_comparison']['seeds'], seeds[:4])
+            self.assertTrue(s['task5']['eq32']['raw']['oneminusp']['proxy']['bootstrap_ci_conditional_on_seed_panel'])
+            import tarfile
+            with tarfile.open(Path(str(root) + '.report.tar.gz')) as archive:
+                self.assertIn('exp/proxy/seed42/proxy.npz', archive.getnames())
+                self.assertIn('exp/cells/full_seed42/interface.npz', archive.getnames())
 
 
 if __name__ == '__main__':

@@ -30,7 +30,7 @@ def class_counts(train_patients, keep_total):
 
 def equal_size_stratified(train_patients, m, retain, seed, total_tol_frac=.02,
                           class_tol_frac=.10, batch=20000, max_draws=5_000_000,
-                          diagnostic_pool=4000):
+                          diagnostic_pool=4000, optimizer_batch=128):
     images = np.asarray([len(p['rows']) for p in train_patients], dtype=np.int64)
     cls = np.asarray([p['oct_class'] for p in train_patients])
     keep_total = round(len(train_patients) * retain)
@@ -38,6 +38,7 @@ def equal_size_stratified(train_patients, m, retain, seed, total_tol_frac=.02,
     members = {c: np.flatnonzero(cls == c) for c in classes}
     target_c = {c: images[members[c]].sum() * k[c] / n[c] for c in classes}
     target = sum(target_c.values())
+    steps_per_epoch = math.ceil(target / optimizer_batch)
     tol = max(1., total_tol_frac * target)
     tol_c = {c: max(1., class_tol_frac * target_c[c]) for c in classes}
     rng = np.random.default_rng(seed)
@@ -49,6 +50,7 @@ def equal_size_stratified(train_patients, m, retain, seed, total_tol_frac=.02,
             pick = np.argpartition(keys, k[c] - 1, axis=1)[:, :k[c]]
             masks[np.arange(size)[:, None], members[c][pick]] = 1
         ok = np.abs(masks @ images - target) <= tol
+        ok &= np.ceil((masks @ images) / optimizer_batch) == steps_per_epoch
         for c in classes:
             ok &= np.abs(masks[:, members[c]] @ images[members[c]] - target_c[c]) <= tol_c[c]
         return masks[ok]
@@ -72,8 +74,11 @@ def equal_size_stratified(train_patients, m, retain, seed, total_tol_frac=.02,
         pool_draws += batch
     pool = np.concatenate(pool) if pool else np.zeros((0, len(train_patients)))
     acceptance = len(pool) / pool_draws if pool_draws else None
-    inclusion = pool.mean(0) if len(pool) else np.full(len(train_patients), np.nan)
+    if not len(pool):
+        raise ValueError('No accepted diagnostic masks; freeze a feasible design before submitting training')
+    inclusion = pool.mean(0)
     return dict(masks=chosen, kind='eq', seed=seed, retain=retain,
+                optimizer_batch=optimizer_batch, optimizer_steps_per_epoch=steps_per_epoch,
                 stratified_counts={str(c): int(k[c]) for c in classes},
                 target_total_images=float(target), total_tolerance=float(tol),
                 target_class_images={str(c): float(target_c[c]) for c in classes},
@@ -128,7 +133,7 @@ def build_all(base, spec):
             d = dict(masks=base['masks'], kind='pilot', seed=base['subset_seed'], retain=.5)
         elif s['kind'] == 'eq':
             d = equal_size_stratified(base['train_patients'], s['m'], s['retain'], s['seed'],
-                                      s['total_tol_frac'], s['class_tol_frac'])
+                                      s['total_tol_frac'], s['class_tol_frac'], optimizer_batch=s.get('optimizer_batch', 128))
         elif s['kind'] == 'smalldel':
             d = small_deletion(base['train_patients'], s['m'], s['n_delete'], s['seed'])
         else:
@@ -138,5 +143,6 @@ def build_all(base, spec):
         f = features(d['masks'], base['train_patients'])
         d['n_images'] = f['n_images'].tolist()
         d['n_images_range'] = [float(f['n_images'].min()), float(f['n_images'].max())]
+        d['steps_per_epoch'] = np.ceil(f['n_images'] / s.get('optimizer_batch', 128)).astype(int).tolist()
         out[name] = d
     return out

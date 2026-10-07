@@ -1,6 +1,6 @@
 {
   "parent_commit": "c4880c9ea1a527e4db004b2199b48e21b6426bf7",
-  "new_branch": "exp/pathway2-seed32-lds-v2",
+  "new_branch": "exp/pathway2-seed32-lds-v2-reviewed",
   "stable_baseline_commit": "b14b69e7652444204595687032a2f415fe968c44",
   "reused_unchanged": [
     "experiments/pathway2_lds_v1/design.py",
@@ -9,8 +9,43 @@
   ],
   "scope": "Only additions under experiments/pathway2_seed32_v2. Meeting 2026-10-05 tasks 1-5 (Stage 1 only).",
   "seeds": "42-73 (42/43/44 harvested from frozen runs)",
-  "designs": {"pilot8": "LDS v1 masks", "eq32": "32 class-stratified equal-size subsets, seed 20261006", "smalldel": "optional, mentor sign-off"},
-  "gammas": [1.0, 0.3, 0.1, 0.03],
+  "designs": {
+    "pilot8": "LDS v1 masks",
+    "eq32": "32 class-stratified image-size-controlled subsets with fixed steps/epoch, seed 20261006; default 8 seeds",
+    "smalldel": "optional, mentor sign-off"
+  },
+  "gammas": [
+    1.0,
+    0.3,
+    0.1,
+    0.03
+  ],
   "submitted_gpu_jobs": false,
-  "tested": "CPU unit tests, synthetic end-to-end collect, GPU code path on CPU with legacy kernels"
+  "tested": {
+    "original_suite": 17,
+    "regression_suite": 18,
+    "cnn_cpu_integration": 1,
+    "delta_gpu_replay": "not run"
+  },
+  "input_bundle_commit": "5e145ef44eb03b4880386c7526e8598cc54c4e4b",
+  "input_bundle_sha256": "6e14c9ba209d6c706e770094ed042ec6c4983151c1b6851fbe6bd019a9ee1aa8",
+  "gamma_pilot": {
+    "target": "oneminusp",
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "gammas": [
+      1.0,
+      0.3,
+      0.1
+    ]
+  },
+  "primary_target": "ce",
+  "exploratory_targets": [
+    "oneminusp",
+    "brier"
+  ],
+  "published_to_github": false
 }

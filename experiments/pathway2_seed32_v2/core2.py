@@ -12,6 +12,7 @@ import runtime as rt
 import targets as T
 import designs as DS
 import solver
+from functools import wraps
 
 PILOT_SEEDS = (42, 43, 44)
 
@@ -26,6 +27,20 @@ def module(name, path):
 
 def roundtrip(x):
     return json.loads(json.dumps(x, allow_nan=False))
+
+
+def exclusive(method):
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        if method.__name__ == 'run_cell':
+            key = args[0]['name']
+        elif method.__name__ == 'score_task':
+            key = f'{args[0]}_{args[1]}' + ('_pilot' if kwargs.get('pilot') else '')
+        else:
+            key = str(args[0])
+        with rt.lock(self.root / '.locks' / f'{method.__name__}_{key}.lock'):
+            return method(self, *args, **kwargs)
+    return wrapped
 
 
 class Session:
@@ -69,16 +84,49 @@ class Session:
             m.load_state_dict(state)
         return m.double().eval() if double else m
 
-    def predict(self, model, batch=64):
+    def predict(self, model, batch=64, return_log=False):
         import torch
         model.eval()
         p = next(model.parameters())
-        rows, X, out = self.ctx['interface'], self.ctx['X'], []
+        rows, X, out, logs = self.ctx['interface'], self.ctx['X'], [], []
         with torch.no_grad():
             for s in range(0, len(rows), batch):
                 x = torch.as_tensor(X[rows[s:s + batch]], device=p.device, dtype=p.dtype)
-                out.append(model(x).softmax(1).cpu().numpy())
-        return np.concatenate(out)
+                logits = model(x)
+                out.append(logits.softmax(1).cpu().numpy())
+                if return_log:
+                    logs.append(logits.log_softmax(1).cpu().numpy())
+        return (np.concatenate(out), np.concatenate(logs)) if return_log else np.concatenate(out)
+
+    def query_gradient(self, model, target, rows, weights, probs):
+        """Use log-softmax CE directly: -w/p times softmax may overflow/underflow."""
+        if target != 'ce':
+            _, v = T.value_and_v(target, probs, self.ctx['y'][rows], weights)
+            return self.score.shadow_h(model, self.ctx['X'][rows], v, self.pilot.DEVICE, self.c['batch'])
+        import torch
+        params = list(model.parameters())
+        out = torch.zeros(sum(p.numel() for p in params), dtype=params[0].dtype, device=params[0].device)
+        for i in range(0, len(rows), self.c['batch']):
+            idx = rows[i:i + self.c['batch']]
+            x = torch.as_tensor(self.ctx['X'][idx], dtype=params[0].dtype, device=params[0].device)
+            y = torch.as_tensor(self.ctx['y'][idx], dtype=torch.long, device=params[0].device)
+            w = torch.as_tensor(weights[i:i + len(idx)], dtype=params[0].dtype, device=params[0].device)
+            loss = (torch.nn.functional.cross_entropy(model(x), y, reduction='none') * w).sum()
+            out += self.score.flatten(torch.autograd.grad(loss, params))
+        if not torch.isfinite(out).all():
+            raise FloatingPointError('Non-finite CE query gradient')
+        return out
+
+    def old_scores(self, seed, key):
+        import csv
+        with (Path(self.c['lds_pilot_out']) / f'score_seed{seed}/scores.csv').open() as f:
+            rows = list(csv.DictReader(f))
+        if [int(r['patient']) for r in rows] != [p['patient'] for p in self.patients]:
+            raise ValueError('Legacy score patient order differs')
+        values = np.asarray([float(r[key]) for r in rows])
+        if not np.isfinite(values).all() or np.linalg.norm(values) == 0:
+            raise ValueError('Legacy score vector is nonfinite or zero')
+        return values
 
     def gradient(self, model, rows, batch=64):
         """b_p = sum_{i in rows} grad CE_i / N (same as LDS v1 core.gradient)."""
@@ -128,8 +176,9 @@ class Session:
             path = d / 'final.pt'
         return torch.load(path, map_location='cpu', weights_only=False)
 
-    def values(self, P):
-        return T.all_values(P[self.N:], self.labels_test, self.weights, self.units)
+    def values(self, P, log_probs=None):
+        return T.all_values(P[self.N:], self.labels_test, self.weights, self.units,
+                            None if log_probs is None else log_probs[self.N:])
 
     # ------------------------------------------------------------------ cells
     def harvest_source(self, cell):
@@ -139,12 +188,13 @@ class Session:
         d = Path(self.c['lds_pilot_out']) / f"subset{cell['subset']:03d}_seed{cell['seed']}"
         return d, 1e-10  # LDS v1 stored fp64 raw probabilities
 
+    @exclusive
     def run_cell(self, cell, tag):
         import torch
         cells = self.root / 'cells'
         final = cells / cell['name']
         if final.exists():
-            rt.completed(final, self.h)
+            rt.completed(final, self.h, cell)
             return 'skipped'
         tmp = cells / f".{cell['name']}.tmp-{tag}"
         if tmp.exists():
@@ -164,20 +214,34 @@ class Session:
             rt.csv_write(tmp / 'curve.csv', curve)
             steps = curve[-1]['step']
             del m, e, opt
-        P = {ep: self.predict(self.initialize(cell['seed'], st, double=True)) for ep, st in (('raw', raw), ('ema', ema))}
+        interfaces = {ep: self.predict(self.initialize(cell['seed'], st, double=True), return_log=True)
+                      for ep, st in (('raw', raw), ('ema', ema))}
+        P = {ep: pair[0] for ep, pair in interfaces.items()}
+        logs = {ep: pair[1] for ep, pair in interfaces.items()}
         harvest_check = None
         if cell['source'] == 'harvest':
+            ce_difference = None
             with np.load(src / 'interface.npz') as z:
                 if not np.array_equal(z['raw_index'], self.ctx['interface']):
                     raise ValueError('Harvest interface rows differ')
                 diffs = {ep: float(np.abs(z[ep].astype(float) - P[ep]).max()) for ep in ('raw', 'ema') if ep in z.files}
+                if cell['kind'] == 'subset':
+                    ce_difference = abs(self.values(z['raw'])['ce']['Y'] - self.values(P['raw'], logs['raw'])['ce']['Y'])
             if 'raw' not in diffs or max(diffs.values()) > tol:
                 raise ValueError(f'Harvested predictions differ from stored interface: {diffs}')
-            harvest_check = dict(source=str(src), max_abs_probability_difference=diffs, tolerance=tol)
+            if ce_difference is not None and (not np.isfinite(ce_difference) or ce_difference > 1e-8):
+                raise ValueError('Harvest CE differs despite small absolute probability error')
+            harvest_check = dict(source=str(src), max_abs_probability_difference=diffs, tolerance=tol,
+                                 ce_macro_abs_difference=ce_difference)
         np.savez_compressed(tmp / 'interface.npz', raw=P['raw'], ema=P['ema'],
+                            log_raw=logs['raw'], log_ema=logs['ema'],
                             raw_index=self.ctx['interface'], classes=self.ctx['y'][self.ctx['interface']])
-        vals = {ep: {t: v['Y'] for t, v in self.values(P[ep]).items()} for ep in P}
+        vals = {ep: {t: v['Y'] for t, v in self.values(P[ep], logs[ep]).items()} for ep in P}
         n_images = self.N - (len(self.removed_rows(cell['design'], cell['subset'])) if cell['kind'] == 'subset' else 0)
+        expected_steps = self.c['epochs'] * int(np.ceil(n_images / self.c['recipe']['batch']))
+        if steps is not None and steps != expected_steps:
+            raise ValueError('Unexpected optimizer step count')
+        steps = expected_steps
         rt.write(tmp / 'result.json', dict(cell=cell, Y=vals, n_train_images=n_images, optimizer_steps=steps,
                                            harvest_check=harvest_check))
         rt.finish(tmp, self.c, cell, elapsed_seconds=time.monotonic() - start)
@@ -222,13 +286,15 @@ class Session:
         t0 = time.monotonic(); self.patient_matrix(model); sync()
         timing['fp64_patient_gradients_seconds'] = time.monotonic() - t0
         steps = self.c['lanczos_max_steps'] + self.c['probe_steps'] + len(self.c['gammas']) + 2
-        timing['score_task_upper_bound_hours'] = (steps * timing['fp64_hvp_seconds'] + timing['fp64_patient_gradients_seconds']) / 3600
+        timing['score_task_operator_estimate_hours'] = (steps * timing['fp64_hvp_seconds'] + timing['fp64_patient_gradients_seconds']) / 3600
+        timing['note'] = 'Estimate excludes reorthogonalization, query gradients, startup and I/O; not an upper bound.'
         rt.write(dest / 'result.json', dict(solver_checks=checks, timing=timing, pilot_replay_exact=True,
                                             noop_exact=True, designs={k: dict(kind=v['kind'], m=len(v['masks']),
                                             n_images_range=v['n_images_range'], diagnostics=v.get('diagnostics', {}).get('acceptance_rate'))
                                             for k, v in self.designs.items()}))
 
     # ----------------------------------------------------------------- proxy
+    @exclusive
     def proxy_seed(self, seed, tag):
         """Gradient-inner-product proxy -h_Y . b_p for the macro target and every
         query patient, all targets, raw endpoint. Cheap; used for tasks 1 and 5."""
@@ -236,7 +302,7 @@ class Session:
         outdir = self.root / 'proxy'
         final = outdir / f'seed{seed}'
         if final.exists():
-            rt.completed(final, self.h)
+            rt.completed(final, self.h, dict(kind='proxy', seed=seed))
             return 'skipped'
         tmp = outdir / f'.seed{seed}.tmp-{tag}'
         if tmp.exists():
@@ -245,7 +311,8 @@ class Session:
         start = time.monotonic()
         state = self.baseline_state(seed)
         model = self.initialize(seed, state['raw'], double=True)
-        P = self.predict(model)
+        P, log_probs = self.predict(model, return_log=True)
+        rt.completed(self.root / 'cells' / f'full_seed{seed}', self.h)
         with np.load(self.root / 'cells' / f'full_seed{seed}' / 'interface.npz') as z:
             if float(np.abs(z['raw'] - P).max()) > 1e-12:
                 raise ValueError('Proxy model differs from the full_seed cell predictions')
@@ -256,29 +323,25 @@ class Session:
                       query_patient_ids=self.qids, b_norm=B.norm(dim=1).cpu().numpy())
         checks = {}
         for t in T.TARGETS:
-            Y, v = T.value_and_v(t, Pt, self.labels_test, self.weights)
-            h = self.score.shadow_h(model, Xt[test], v, self.pilot.DEVICE, self.c['batch'])
+            Y = self.values(P, log_probs)[t]['Y']
+            h = self.query_gradient(model, t, test, self.weights, Pt)
             macro = -(B @ h).cpu().numpy()
             per_query = np.zeros((len(self.units), len(self.patients)))
             for qi, u in enumerate(self.units):
-                _, vq = T.value_and_v(t, Pt[u], self.labels_test[u], np.full(len(u), 1. / len(u)))
-                hq = self.score.shadow_h(model, Xt[test[u]], vq, self.pilot.DEVICE, self.c['batch'])
+                hq = self.query_gradient(model, t, test[u], np.full(len(u), 1. / len(u)), Pt[u])
                 per_query[qi] = -(B @ hq).cpu().numpy()
             recombined = self.coef @ per_query
             rel = float(np.linalg.norm(recombined - macro) / max(np.linalg.norm(macro), 1e-300))
-            if rel > 1e-8:
+            if not np.isfinite(rel) or rel > 1e-8:
                 raise ValueError(f'Per-query proxies do not recombine to the macro proxy ({t}: {rel})')
             checks[t] = dict(per_query_recombination_rel_error=rel, Y=Y)
             arrays[f'proxy_macro_{t}'] = macro
             arrays[f'proxy_query_{t}'] = per_query
         if seed in PILOT_SEEDS:
-            import csv
-            with (Path(self.c['lds_pilot_out']) / f'score_seed{seed}/scores.csv').open() as f:
-                rows = list(csv.DictReader(f))
-            old = np.asarray([float(r['frozen_h_upweight']) for r in rows])
+            old = self.old_scores(seed, 'frozen_h_upweight')
             rel = float(np.linalg.norm(old - arrays['proxy_macro_ce']) / np.linalg.norm(old))
             checks['lds_v1_frozen_h_ce_rel_difference'] = rel
-            if rel > 1e-6:
+            if not np.isfinite(rel) or rel > 1e-6:
                 raise ValueError(f'CE proxy differs from LDS v1 frozen_h ({rel})')
         np.savez_compressed(tmp / 'proxy.npz', **arrays)
         rt.write(tmp / 'result.json', dict(seed=seed, checks=checks, endpoint='raw', sign='upweight: -h.b_p'))
@@ -287,14 +350,16 @@ class Session:
         return 'done'
 
     # ----------------------------------------------------------------- score
-    def score_task(self, seed, target, tag):
+    @exclusive
+    def score_task(self, seed, target, tag, pilot=False):
         """Multi-shift IF for one (seed, target): every gamma from one Krylov space."""
         import torch
-        outdir = self.root / 'score'
+        outdir = self.root / ('score_pilot' if pilot else 'score')
+        gammas = self.c['gamma_pilot']['gammas'] if pilot else self.c['gammas']
         name = f'seed{seed}_{target}'
         final = outdir / name
         if final.exists():
-            rt.completed(final, self.h)
+            rt.completed(final, self.h, dict(kind='score', seed=seed, target=target))
             return 'skipped'
         tmp = outdir / f'.{name}.tmp-{tag}'
         if tmp.exists():
@@ -303,38 +368,45 @@ class Session:
         start = time.monotonic()
         dev = self.pilot.DEVICE
         model = self.initialize(seed, self.baseline_state(seed)['raw'], double=True)
-        P = self.predict(model)
-        Y, v = T.value_and_v(target, P[self.N:], self.labels_test, self.weights)
-        h = self.score.shadow_h(model, self.ctx['X'][self.ctx['test']], v, dev, self.c['batch'])
+        P, log_probs = self.predict(model, return_log=True)
+        Y = self.values(P, log_probs)[target]['Y']
+        h = self.query_gradient(model, target, self.ctx['test'], self.weights, P[self.N:])
         hvp = self.score.make_hvp(model, self.ctx['X'], self.ctx['y'], self.ctx['train'], dev,
                                   self.c['weight_decay'], 0., self.c['batch'])
         probe = self.dc.lanczos_probe(hvp, h.numel(), self.c['probe_steps'], 20261006 + seed, dev, torch.float64)
-        ms = solver.multishift_lanczos(hvp, h, self.c['gammas'], self.c['lanczos_max_steps'],
+        ms = solver.multishift_lanczos(hvp, h, gammas, self.c['lanczos_max_steps'],
                                        self.c['lanczos_est_tol'], dot=lambda a, b: float(a @ b))
         B = self.patient_matrix(model)
         proxy = -(B @ h).cpu().numpy()
         arrays = dict(train_patient_ids=np.asarray([p['patient'] for p in self.patients]), proxy=proxy)
-        gate, agreement = [], {}
+        gate = []
         from analysis_stats import spearman
-        for g in self.c['gammas']:
-            x = ms['x'][g]
-            true = float((hvp(x) + g * x - h).norm() / h.norm())
+        for g in gammas:
+            x = ms['x'].get(g)
+            true = None if x is None else float((hvp(x) + g * x - h).norm() / h.norm())
+            true = true if true is not None and np.isfinite(true) else None
             q = solver.qualify(g, true, ms['ritz_min'], solver.probe_screen(probe, g), self.c['cg_fail_tol'])
-            q['x_norm'] = float(x.norm())
+            q['x_norm'] = None if x is None else float(x.norm())
             q['estimated_rel_residual'] = ms['final_estimated_rel_residual'][g]
-            tau = -(B @ x).cpu().numpy()
-            arrays[f'tau_gamma{g:g}'] = tau
-            q['spearman_if_vs_proxy_148_patients'] = spearman(tau, proxy)
+            q['solver_error'] = ms.get('errors', {}).get(g)
+            q['spearman_if_vs_proxy_148_patients'] = None
+            if q['qualified']:
+                tau = -(B @ x).cpu().numpy()
+                if not np.isfinite(tau).all():
+                    q['qualified'] = False
+                    q['reasons'].append('non-finite influence scores')
+                else:
+                    arrays[f'tau_gamma{g:g}'] = tau
+                    q['spearman_if_vs_proxy_148_patients'] = spearman(tau, proxy)
             gate.append(q)
         consistency = None
-        if target == 'ce' and seed in PILOT_SEEDS and 1. in self.c['gammas']:
-            import csv
-            with (Path(self.c['lds_pilot_out']) / f'score_seed{seed}/scores.csv').open() as f:
-                old = np.asarray([float(r['tau_upweight']) for r in csv.DictReader(f)])
+        if target == 'ce' and seed in PILOT_SEEDS and 'tau_gamma1' in arrays:
+            old = self.old_scores(seed, 'tau_upweight')
             new = arrays['tau_gamma1']
             consistency = dict(rel_l2_difference=float(np.linalg.norm(new - old) / np.linalg.norm(old)),
                                spearman=spearman(new, old))
-            consistency['passed'] = consistency['rel_l2_difference'] <= 1e-3 and consistency['spearman'] >= .999
+            consistency['passed'] = bool(consistency['rel_l2_difference'] <= 1e-3
+                                         and consistency['spearman'] is not None and consistency['spearman'] >= .999)
         g1 = next((q for q in gate if q['gamma'] == 1.), None)
         rt.csv_write(tmp / 'lanczos_history.csv', ms['history'])
         np.savez_compressed(tmp / 'scores.npz', **arrays)
@@ -344,11 +416,10 @@ class Session:
             random_probe=dict(steps=probe['steps'], endpoints=probe['endpoints']),
             lds_v1_consistency=consistency, gamma1_qualified=None if g1 is None else g1['qualified'],
             stationarity_assumption_satisfied=False,
-            note='Gammas are fixed before outcomes; an unqualified gamma is reported as unsolvable.'))
+            note='Completed assessment is not a successful solve. Unqualified shifts have no tau and are excluded from LDS.'))
+        if consistency is not None and not consistency['passed']:
+            rt.write(tmp / 'failed.json', dict(reason='CE gamma1 replay mismatch', consistency=consistency))
+            raise ValueError(f'gamma=1 CE scores differ from LDS v1 CG scores: {consistency}; diagnostics: {tmp}')
         rt.finish(tmp, self.c, dict(kind='score', seed=seed, target=target), elapsed_seconds=time.monotonic() - start)
         os.rename(tmp, final)
-        if consistency is not None and not consistency['passed']:
-            raise ValueError(f'gamma=1 CE scores differ from LDS v1 CG scores: {consistency}')
-        if g1 is not None and not g1['qualified']:
-            raise ValueError(f'gamma=1 solve unqualified: {g1["reasons"]}')
-        return 'done'
+        return 'done' if all(q['qualified'] for q in gate) else 'assessed_with_unqualified_shifts'

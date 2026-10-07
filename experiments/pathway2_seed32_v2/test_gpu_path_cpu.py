@@ -53,6 +53,7 @@ class GpuPathOnCpu(unittest.TestCase):
                      # A random-ish tiny CNN has Hessian eigenvalues below -1; a large objective L2
                      # makes H + gamma I positive definite so the gamma=1 consistency check is meaningful.
                      weight_decay=2., gammas=[1., .3, .03],
+                     gamma_pilot=dict(seeds=[42, 43, 44], target='oneminusp', gammas=[1., .3, .1]),
                      lanczos_max_steps=60, lanczos_est_tol=1e-6, probe_steps=8, cg_fail_tol=1e-3,
                      designs=dict(pilot8=dict(kind='pilot', m=8, retain=.5),
                                   eq32=dict(kind='eq', m=6, retain=.5, seed=4, total_tol_frac=.5, class_tol_frac=1.)))
@@ -121,6 +122,42 @@ class GpuPathOnCpu(unittest.TestCase):
                 g1 = next(x for x in sr['gammas'] if x['gamma'] == 1.)
                 self.assertTrue(g1['qualified'])
                 self.assertEqual(s.score_task(45, 'oneminusp', 't'), 'done')
+                self.assertEqual(s.score_task(42, 'oneminusp', 'pilot', pilot=True), 'done')
+                with np.load(root / 'score_pilot/seed42_oneminusp/scores.npz') as z:
+                    self.assertIn('tau_gamma0.1', z.files)
+                    self.assertNotIn('tau_gamma0.03', z.files)
+                self.assertFalse((root / 'score/seed42_oneminusp').exists())
+                # A failed numerical screen is preserved as an assessment with no
+                # tau arrays. Completion must not mean that the shifts solved.
+                with patch.object(core2.solver, 'probe_screen', return_value={'positive': False}):
+                    self.assertEqual(s.score_task(45, 'ce', 'unqualified'), 'assessed_with_unqualified_shifts')
+                uq = rt.read(root / 'score/seed45_ce/result.json')
+                self.assertTrue(all(not g['qualified'] for g in uq['gammas']))
+                with np.load(root / 'score/seed45_ce/scores.npz') as z:
+                    self.assertFalse(any(k.startswith('tau_gamma') for k in z.files))
+                # A hard legacy replay mismatch must never acquire a complete
+                # marker; a retry cannot skip it as a success.
+                old_tau = s.old_scores(42, 'tau_upweight')
+                (root / 'score/seed42_ce').rename(root / 'score/seed42_ce_verified')
+                with patch.object(s, 'old_scores', return_value=2 * old_tau):
+                    with self.assertRaisesRegex(ValueError, 'differ from LDS v1'):
+                        s.score_task(42, 'ce', 'mismatch')
+                self.assertFalse((root / 'score/seed42_ce/complete.json').exists())
+                self.assertTrue((root / 'score/.seed42_ce.tmp-mismatch/failed.json').exists())
+                # Saturated logits: probabilities underflow to zero, but exact
+                # CE values and direct log-softmax gradients remain finite.
+                saturated = s.initialize(45, s.baseline_state(45)['raw'], double=True)
+                last = [layer for layer in saturated.modules() if isinstance(layer, torch.nn.Linear)][-1]
+                with torch.no_grad():
+                    last.weight.zero_()
+                    last.bias.copy_(torch.tensor([-1000., 0., 0., 0.], dtype=torch.float64))
+                probs_sat, logs_sat = s.predict(saturated, return_log=True)
+                self.assertTrue(np.any(probs_sat == 0))
+                ce_sat = s.values(probs_sat, logs_sat)['ce']['Y']
+                grad_sat = s.query_gradient(saturated, 'ce', ctx['test'], s.weights, probs_sat[s.N:])
+                self.assertGreater(ce_sat, 200.)
+                self.assertTrue(torch.isfinite(grad_sat).all())
+                self.assertGreater(float(grad_sat.norm()), 0.)
                 # ---- a corrupted harvest source must be refused
                 with np.load(pilot_out / 'subset000_seed42/interface.npz') as z:
                     raw = z['raw'].copy()

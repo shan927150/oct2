@@ -16,12 +16,14 @@ def _check(probs, labels, weights):
     weights = np.asarray(weights, dtype=np.float64)
     if probs.ndim != 2 or len(probs) != len(labels) or len(labels) != len(weights):
         raise ValueError('probs/labels/weights shape mismatch')
-    if not np.isfinite(probs).all():
-        raise FloatingPointError('Non-finite probabilities')
+    if labels.ndim != 1 or weights.ndim != 1 or np.any(labels < 0) or np.any(labels >= probs.shape[1]):
+        raise ValueError('Invalid labels/weights')
+    if not np.isfinite(probs).all() or not np.isfinite(weights).all():
+        raise FloatingPointError('Non-finite probabilities/weights')
     return probs, labels, weights
 
 
-def per_image(name, probs, labels):
+def per_image(name, probs, labels, log_probs=None):
     probs, labels, _ = _check(probs, labels, np.zeros(len(labels)))
     rows = np.arange(len(labels))
     py = probs[rows, labels]
@@ -32,6 +34,11 @@ def per_image(name, probs, labels):
         onehot[rows, labels] = 1.
         return ((probs - onehot) ** 2).sum(1)
     if name == 'ce':
+        if log_probs is not None:
+            lp = np.asarray(log_probs, dtype=np.float64)
+            if lp.shape != probs.shape or not np.isfinite(lp).all():
+                raise FloatingPointError('Invalid log probabilities')
+            return -lp[rows, labels]
         if np.any(py <= 0):
             raise FloatingPointError('CE probability is not positive')
         return -np.log(py)
@@ -53,7 +60,10 @@ def value_and_v(name, probs, labels, weights):
         py = probs[rows, labels]
         if np.any(py <= 0):
             raise FloatingPointError('CE probability is not positive')
-        v[rows, labels] = -weights / py
+        with np.errstate(over='ignore'):
+            v[rows, labels] = -weights / py
+        if not np.isfinite(v).all():
+            raise FloatingPointError('CE interface derivative overflows; use direct log-softmax gradient')
     else:
         raise ValueError('Unknown target ' + str(name))
     return float(weights @ per_image(name, probs, labels)), v
@@ -83,10 +93,10 @@ def per_query_values(name, probs_test, labels_test, units):
     return np.asarray([loss[u].mean() for u in units])
 
 
-def all_values(probs_test, labels_test, weights, units):
+def all_values(probs_test, labels_test, weights, units, log_probs=None):
     """Macro Y and per-query Y_q for every target, from stored probabilities."""
     out = {}
     for name in TARGETS:
-        Y, _ = value_and_v(name, probs_test, labels_test, weights)
-        out[name] = dict(Y=Y, Yq=per_query_values(name, probs_test, labels_test, units))
+        loss = per_image(name, probs_test, labels_test, log_probs)
+        out[name] = dict(Y=float(np.asarray(weights) @ loss), Yq=np.asarray([loss[u].mean() for u in units]))
     return out

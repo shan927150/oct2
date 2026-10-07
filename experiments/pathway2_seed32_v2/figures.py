@@ -26,6 +26,8 @@ def task1(summary, out):
     for design, eps in summary['task1'].items():
         for ep, by_t in eps.items():
             targets = list(by_t)
+            if not targets:
+                continue
             fig, axes = plt.subplots(len(targets), 3, figsize=(11, 3.1 * len(targets)), squeeze=False)
             for i, t in enumerate(targets):
                 cur = by_t[t]
@@ -50,7 +52,7 @@ def task1(summary, out):
                 icc = [r for r in rows if r.get('icc_reliability') is not None]
                 ax.plot([r['k'] for r in icc], [r['icc_reliability'] for r in icc], color=SERIES[2],
                         marker=MARKERS[2], linestyle=':', label='variance components (all seeds)')
-                ax.set_xscale('log', base=2); ax.set_ylim(-.2, 1.02)
+                ax.set_xscale('log', base=2); ax.set_ylim(-1.02, 1.02)
                 ax.set_title(f'{t}: subset-ranking reliability'); ax.set_xlabel('seeds k')
                 ax = axes[i, 2]
                 preds = list(dict.fromkeys(r['predictor'] for r in cur['lds']))
@@ -93,11 +95,12 @@ def task3_size(truths, summary, out):
         for j, d in enumerate(designs):
             D = truths[d]['raw'][t]['D'].mean(1)
             rho = summary['task2_3'][d]['raw'][t]['truth_n_images_spearman']
+            label = 'undefined' if rho is None else f'{rho:+.2f}'
             ax.scatter(truths[d]['n_images'], D, color=SERIES[j], marker=MARKERS[j], s=28,
-                       edgecolor=SURFACE, linewidth=.8, label=f'{d} (Spearman {rho:+.2f})')
+                       edgecolor=SURFACE, linewidth=.8, label=f'{d}, k={len(truths[d]["seeds"])} (rho {label})')
         ax.set_xlabel('retained training images N_j'); ax.set_ylabel(f'mean Delta {t} (raw)')
         ax.set_title(t); ax.legend(fontsize=7)
-    fig.suptitle('Task 3 - truth vs subset size (size confounding check)', color=INK)
+    fig.suptitle('Task 3 - size diagnostic; seed counts may differ (matched comparison in table)', color=INK)
     fig.tight_layout()
     path = Path(out) / 'fig_task3_size.png'
     fig.savefig(path, dpi=150); plt.close(fig)
@@ -120,7 +123,7 @@ def task4(summary, out):
             ax.plot([p[0] for p in pts], [p[1] for p in pts], color=SERIES[j], marker=MARKERS[j], label=d)
         for g in gs:
             if rows[f'{g:g}']['status'] != 'solved':
-                ax.annotate('unsolvable', (g, 0), color=MUTED, fontsize=7, rotation=90, ha='center')
+                ax.annotate('unqualified / missing', (g, 0), color=MUTED, fontsize=7, rotation=90, ha='center')
                 ax.axvline(g, color=GRID, linewidth=4, zorder=0)
         ax.axhline(0, color=MUTED, linewidth=.8)
         ax.set_xscale('log'); ax.set_ylim(-1.05, 1.05); ax.set_xlabel('gamma'); ax.set_title(f'{t}: LDS (deleter, raw) vs gamma')
@@ -151,10 +154,13 @@ def task5(summary, out):
             v = v[np.isfinite(v)]
             ax = axes[i, j]
             ax.hist(v, bins=np.linspace(-1, 1, 21), color=SERIES[0], edgecolor=SURFACE, linewidth=2)
-            ax.axvline(r['proxy']['mean'], color=INK, linewidth=1.5, label=f"mean {r['proxy']['mean']:+.3f}")
-            ax.axvline(r['size_baseline']['mean'], color=SERIES[1], linewidth=1.5, linestyle='--',
-                       label=f"size baseline {r['size_baseline']['mean']:+.3f}")
-            ax.set_title(f"{d} / {t}  (perm p={r['proxy']['permutation_p_one_sided']:.3f})")
+            if r['proxy']['mean'] is not None:
+                ax.axvline(r['proxy']['mean'], color=INK, linewidth=1.5, label=f"mean {r['proxy']['mean']:+.3f}")
+            if r['size_baseline']['mean'] is not None:
+                ax.axvline(r['size_baseline']['mean'], color=SERIES[1], linewidth=1.5, linestyle='--',
+                           label=f"size baseline {r['size_baseline']['mean']:+.3f}")
+            p = r['proxy']['permutation_p_one_sided']
+            ax.set_title(f"{d} / {t}  (perm p={p:.3f})" if p is not None else f'{d} / {t} (undefined)')
             ax.set_xlabel('per-query LDS (proxy)'); ax.legend(fontsize=7)
     nq = summary['task5'][designs[0]]['raw'][targets[0]]['proxy']['n_queries']
     fig.suptitle(f'Task 5 - per-query LDS over {nq} heldout patients (gradient-inner-product preview)', color=INK)
