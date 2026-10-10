@@ -1,0 +1,24 @@
+{
+  "parent_commit": "42f88f39bd502255a4599194e00d565f65a35723",
+  "new_branch": "exp/pathway2-image-lds-v3",
+  "scope": "Only additions under experiments/pathway2_image_lds_v3. Mentor meeting 2026-10-09: TRAK-aligned image-level random 50% LDS.",
+  "design": "img32: 32 subsets, each keeps floor(2045*0.5)=1022 training images chosen uniformly (design seed 20261009), not grouped by patient",
+  "seeds": "42-49; full baselines harvested from the seed32 v2 reviewed run (42-44 via the stable baseline), 256 new half-data trainings",
+  "query_targets": "image-mean CE (primary), Brier, 1-p_y; patient-macro weighting secondary; per-query-image and per-query-patient LDS",
+  "scores": "image-level proxy -h.g_i (all seeds); image-level IF -h^T(H+gamma I)^-1 g_i (seeds 42-44, gamma 1/0.3/0.1/0.03, multi-shift Lanczos)",
+  "gates": [
+    "smoke: full-horizon no-op equals frozen stable baseline; 2-epoch image-subset double replay exact; per-image gradients sum to patient gradients; query-Jacobian contraction equals direct per-image gradients",
+    "harvest: recomputed fp64 predictions equal the seed32 full cells (<=1e-10)",
+    "proxy: Jacobian-recombined macro scores equal direct macro scores (<=1e-8); patient-summed CE proxy equals LDS v1 frozen_h (<=1e-6)",
+    "score: patient-summed gamma=1 CE IF equals LDS v1 CG scores (rel L2<=1e-3, Spearman>=0.999) before any target is solved"
+  ],
+  "reused_unchanged": [
+    "experiments/pathway2_lds_v1/design.py", "experiments/pathway2_lds_v1/analysis_stats.py",
+    "experiments/pathway2_stable_v1/stable_core.py", "experiments/pathway2_seed32_v2/targets.py",
+    "experiments/pathway2_seed32_v2/solver.py", "experiments/pathway2_seed32_v2/stats2.py",
+    "experiments/pathway2_seed32_v2/formula_tests.py", "experiments/pathway2_seed32_v2/scheduler.py"
+  ],
+  "partitions": {"smoke_and_training": "gpuA40x4 (exact replay of A40 baselines)", "proxy_and_score": "gpuA100x4 by default (fp64)"},
+  "tested": {"unit": 10, "cpu_integration_with_legacy_kernels": 1, "delta_gpu": "not run"},
+  "submitted_gpu_jobs": false
+}
