@@ -1,6 +1,13 @@
 {
   "parent_commit": "42f88f39bd502255a4599194e00d565f65a35723",
-  "new_branch": "exp/pathway2-image-lds-v3",
+  "new_branch": "exp/pathway2-image-lds-v3-reviewed",
+  "reviewed_from": "47e761f895d1fbe533973af59aad8489ce7b5583",
+  "review_changes": [
+    "Withhold IF when the required patient-level gate is missing",
+    "Allow partial reports before training cells exist, using frozen query identities",
+    "Add a proxy comparator using the same score seeds as IF",
+    "Use 2000 joint subset bootstrap/permutation draws for per-query LDS"
+  ],
   "scope": "Only additions under experiments/pathway2_image_lds_v3. Mentor meeting 2026-10-09: TRAK-aligned image-level random 50% LDS.",
   "design": "img32: 32 subsets, each keeps floor(2045*0.5)=1022 training images chosen uniformly (design seed 20261009), not grouped by patient",
   "seeds": "42-49; full baselines harvested from the seed32 v2 reviewed run (42-44 via the stable baseline), 256 new half-data trainings",
@@ -19,6 +26,6 @@
     "experiments/pathway2_seed32_v2/formula_tests.py", "experiments/pathway2_seed32_v2/scheduler.py"
   ],
   "partitions": {"smoke_and_training": "gpuA40x4 (exact replay of A40 baselines)", "proxy_and_score": "gpuA100x4 by default (fp64)"},
-  "tested": {"unit": 10, "cpu_integration_with_legacy_kernels": 1, "delta_gpu": "not run"},
+  "tested": {"unit": 11, "cpu_integration_with_legacy_kernels": 1, "delta_gpu": "not run"},
   "submitted_gpu_jobs": false
 }

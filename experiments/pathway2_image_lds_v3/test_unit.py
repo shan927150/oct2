@@ -156,6 +156,15 @@ class SyntheticCollect(unittest.TestCase):
     """Additive world: subset effect = sum over deleted images of -tau_i (+ seed noise).
     Proxy/IF equal to tau must give LDS near 1; per-query predictions likewise."""
 
+    def test_missing_patient_gate_withholds_if(self):
+        import analysis3
+        data = dict(checks={}, scores={(42, 'ce'): dict(
+            result=dict(gammas=[dict(gamma=1., qualified=True)]),
+            arrays={'tau_gamma1': np.ones(4)})})
+        tau, why = analysis3.if_scores(data, dict(score_seeds=[42]), 'ce', 1.)
+        self.assertIsNone(tau)
+        self.assertIn('gate missing', why)
+
     def test_collect(self):
         import run
         import targets as T32
@@ -184,6 +193,12 @@ class SyntheticCollect(unittest.TestCase):
             rt.write(root / 'smoke/designs.json', frozen); rt.write(root / 'smoke/result.json', {})
             rt.finish(root / 'smoke', c, dict(kind='smoke'))
             rt.write(root / 'designs.json', frozen)
+
+            # Partial collection is valid immediately after smoke, before any cell exists.
+            with patch.object(run, 'config', return_value=c):
+                run.collect(SimpleNamespace(out=str(root), allow_partial=True))
+            partial = next(root.glob('report_partial_*/summary.json'))
+            self.assertEqual(rt.read(partial)['design']['n_query'], nq)
 
             def logs(delta):
                 z = np.zeros((ntr + nq, 4))
@@ -232,6 +247,7 @@ class SyntheticCollect(unittest.TestCase):
             s = rt.read(root / 'report/summary.json')
             blk = s['macro']['raw']['ce_img']['predictors']
             self.assertGreater(blk['proxy_deleter']['spearman'], .9)
+            self.assertGreater(blk['proxy_deleter_score_seeds']['spearman'], .9)
             self.assertGreater(blk['IF_gamma1_deleter']['spearman'], .9)
             self.assertGreater(s['macro']['raw']['brier_macro']['predictors']['proxy_deleter']['spearman'], .9)
             eq = s['equivalence']['ce']

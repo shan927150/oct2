@@ -110,8 +110,11 @@ def if_scores(data, c, target, gamma):
     """Seed-mean image IF scores; None plus reason unless every score seed qualified."""
     taus, reasons = [], []
     for s in c['score_seeds']:
-        if s in STABLE_SEEDS and s in data['checks'] and not data['checks'][s]['passed']:
-            return None, f'seed{s}: patient-level gate failed'
+        if s in STABLE_SEEDS:
+            if s not in data['checks']:
+                return None, f'seed{s}: patient-level gate missing'
+            if not data['checks'][s]['passed']:
+                return None, f'seed{s}: patient-level gate failed'
         sc = data['scores'].get((s, target))
         if sc is None:
             return None, f'score seed{s}_{target} missing'
@@ -137,7 +140,7 @@ def analyze(data, c):
     nimg = M.sum(1)
     tr = truth(data, c)
     summary = dict(design=dict(name=c['design_name'], m=m, retained_images=int(data['design']['retained_images']),
-                               n_train=int(data['N']), n_query=int(len(data['labels_test'])) if data['labels_test'] is not None else None,
+                               n_train=int(data['N']), n_query=len(data['base']['query_rows']),
                                n_images_range=[float(nimg.min()), float(nimg.max())], seeds_complete=tr['seeds']),
                    missing=data['missing'], proxies=sorted(data['proxies']),
                    score_tasks=sorted(f'seed{s}_{t}' for s, t in data['scores']),
@@ -168,6 +171,9 @@ def analyze(data, c):
                             sign_flip=spearman(-preds['proxy_deleter'], Dbar),
                             note='N_j is constant, so deleter, retained and matched rankings coincide by construction.')
                 if wname == 'img' and t in c['score_targets']:
+                    matched_proxy = proxy_mean(data, c['score_seeds'], pk)
+                    if matched_proxy is not None:
+                        preds['proxy_deleter_score_seeds'] = ID.deleter_prediction(M, matched_proxy)
                     for g in c['gammas']:
                         tau, why = if_scores(data, c, t, g)
                         status[f'IF_gamma{g:g}'] = why or 'ok'
@@ -209,7 +215,7 @@ def analyze(data, c):
             pm = proxy_mean(data, seeds, key + t)
             if pm is None:
                 continue
-            res = S.per_query_lds(pm, tr['raw'][t][tkey].mean(1))
+            res = S.per_query_lds(pm, tr['raw'][t][tkey].mean(1), draws=2000)
             per = res.pop('per_query')
             summary['per_query'][f'{t}_{unit}'] = dict(proxy=res, per_query=per)
             tables['per_query'].append(dict(target=t, unit=unit, **{k: v for k, v in res.items() if not isinstance(v, list)},

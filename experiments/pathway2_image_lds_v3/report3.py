@@ -62,6 +62,8 @@ def render(s, c, figs, partial):
     L += ['', '## 图', ''] + [f'- `{x}`' for x in figs]
     L += ['', '## 范围', '',
           '- IF 在各 score seed 的 raw 全数据端点计算，端点不是驻点；这是阻尼端点近似。',
+          '- proxy_deleter 使用全部完整真值 seeds，proxy_deleter_score_seeds 使用与 IF 相同的 score seeds。两者使用同一真值面板。',
+          '- 宏目标与逐查询统计均使用 2,000 次子集 bootstrap 和置换，区间条件于当前 seed 面板与查询集，p 值未做多重比较校正。',
           '- 逐查询 LDS 只用梯度内积，没有逐查询 Hessian 逆。',
           '- 类别构成 ridge 是交叉拟合诊断，不给 CI/p，不是上界。', '']
     return '\n'.join(L)
