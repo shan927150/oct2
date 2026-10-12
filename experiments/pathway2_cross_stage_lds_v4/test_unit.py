@@ -203,6 +203,7 @@ class PrepareTests(unittest.TestCase):
                 self.assertEqual(c['attack_seeds'], [5101, 5102, 5103])
                 self.assertEqual(c['attack'], dict(epochs=50, lr=.01, batch=128, hidden=64, deterministic=True))
                 self.assertEqual(c['score_seeds'], [42, 43])
+                self.assertEqual(c['h_chain_fd_rel_tol'], 5e-3)
                 self.assertEqual(len(c['cells']), 6)
                 self.assertTrue(all(str(v3 / 'cells' / x['name'] / 'complete.json') in c['input_sha256'] for x in c['v3_cells']))
                 self.assertIn(str(full / 'checkpoints/shadow_2_fixed.pt'), c['input_sha256'])

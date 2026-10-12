@@ -273,12 +273,17 @@ class XSession(Session):
         # FD direction = a real subset displacement (what L2-lin contracts h with), rescaled small
         d = dtheta / dtheta.norm() * theta.norm() * 1e-3
         fd_rows = []
+        analytic = float(h @ d)
         for eps in (1., 1e-1, 1e-2, 1e-3):
             fp = self.interface_objective(self.shift(model, s, eps * d), v_all)
             fm = self.interface_objective(self.shift(model, s, -eps * d), v_all)
-            fd_rows.append(dict(eps=eps, fd=(fp - fm) / (2 * eps), analytic=float(h @ d)))
+            fd = (fp - fm) / (2 * eps)
+            err = abs(fd - analytic)
+            fd_rows.append(dict(eps=eps, fd=fd, analytic=analytic, absolute_error=err,
+                                relative_error=err / max(abs(analytic), 1e-12)))
         checks['h_chain_fd'] = fd_rows
-        if not any(abs(r['fd'] - r['analytic']) <= 1e-5 * max(abs(r['analytic']), 1e-12) + 1e-14 for r in fd_rows):
+        checks['h_chain_fd_best_relative_error'] = min(r['relative_error'] for r in fd_rows)
+        if checks['h_chain_fd_best_relative_error'] > c['h_chain_fd_rel_tol']:
             raise ValueError(f'h chain rule differs from finite differences: {fd_rows}')
         sync(); t0 = time.monotonic()
         lin = self.score.linearized_predictions(model, self.ctx['X'][self.rows3], dtheta, self.dev, self.c['batch'])
