@@ -3,7 +3,7 @@
 Reuses the v3 Session (core3.py, byte-for-byte) for the Stage-1 context, the frozen image
 design, model initialisation, fp64 predictions and per-image gradients, plus the legacy
 07/05 kernels (shadow_h, make_hvp, linearized_predictions, attack training/evaluation).
-No Stage-1 model is trained here: subset and full models are read from the v3 run.
+Shadow3 subset and full models are read from v3; unaffected shadows can use the same stable recipe.
 
 Conventions (unchanged from v3): g_i = grad CE_i(theta)/N; tau_i = -hbar^T (H + gamma I)^-1 g_i is the
 UPWEIGHT effect on the attack objective, so deleting image i contributes -tau_i.
@@ -75,9 +75,17 @@ class XSession(Session):
                     raise ValueError('Legacy shadow-3 interface order differs from the v3 interface rows')
                 p = np.full((len(rows), n_cls), np.nan, dtype=np.float32)
             else:
-                model = pilot.load_model(ck / f'shadow_{sid}_fixed.pt', n_in, 128, n_cls)
-                p = pilot.get_predictions(model, X[rows]).astype(np.float32)
-                del model
+                if c['background_recipe'] == 'stable':
+                    d = self.root / 'background' / f'shadow{sid}'
+                    rt.completed(d, self.h, dict(kind='background', shadow=sid))
+                    with np.load(d / 'interface.npz') as z:
+                        if not np.array_equal(z['raw_index'], rows):
+                            raise ValueError('Background interface rows differ')
+                        p = z['raw'].astype(np.float32)
+                else:
+                    model = pilot.load_model(ck / f'shadow_{sid}_fixed.pt', n_in, 128, n_cls)
+                    p = pilot.get_predictions(model, X[rows]).astype(np.float32)
+                    del model
             xs.append(p); raws.append(rows); cs.append(y[rows].astype(np.int64)); sids.append(np.full(len(rows), sid))
             ms.append(np.r_[np.ones(len(tr), dtype=np.int64), np.zeros(len(te), dtype=np.int64)])
         if len(splits['shadow_models']) != c['n_shadow']:
@@ -89,6 +97,43 @@ class XSession(Session):
                     shadow_id=np.concatenate(sids).astype(np.int64), raw_index=np.concatenate(raws),
                     q_x=np.asarray(q['x'], dtype=np.float32), q_membership=np.asarray(q['membership'], dtype=np.int64),
                     q_classes=np.asarray(q['classes'], dtype=np.int64), q_raw_index=np.asarray(q['raw_index']))
+
+    @exclusive
+    def background_shadow(self, sid, tag):
+        """Train one unaffected shadow once, on its original split and initialization seed."""
+        import torch
+        final, tmp = staged(self.root, Path('background') / f'shadow{sid}', tag)
+        cell = dict(kind='background', shadow=sid)
+        if final.exists():
+            shutil.rmtree(tmp)
+            rt.completed(final, self.h, cell)
+            return 'skipped'
+        start = time.monotonic()
+        split = rt.read(Path(self.c['full']) / 'splits/fresh_patient_split.json')['shadow_models'][sid]
+        train = np.asarray(split['train_idx'], dtype=np.int64)
+        rows = np.r_[train, np.asarray(split['test_idx'], dtype=np.int64)]
+        seed = self.c['fixed_shadow_seed'] + sid
+        orders = self.pilot.make_epoch_orders(train, self.c['epochs'], seed + 700000)
+        model, ema, _, curve = self.stable.train(self.initialize(seed), self.ctx['X'], self.ctx['y'], orders,
+                                                np.array([], dtype=np.int64), 1., **self.c['recipe'])
+        torch.save(dict(raw=model.state_dict(), ema=ema.state_dict(), seed=seed,
+                        epochs=self.c['epochs'], recipe=self.c['recipe']), tmp / 'final.pt')
+        rt.csv_write(tmp / 'curve.csv', curve)
+        model.double().eval()
+        probs = []
+        with torch.no_grad():
+            for i in range(0, len(rows), self.c['batch']):
+                x = torch.as_tensor(self.ctx['X'][rows[i:i+self.c['batch']]], device=self.dev, dtype=torch.float64)
+                probs.append(model(x).softmax(1).cpu().numpy())
+        p = np.concatenate(probs)
+        np.savez_compressed(tmp / 'interface.npz', raw=p, raw_index=rows)
+        rt.write(tmp / 'result.json', dict(shadow=sid, seed=seed, epochs=self.c['epochs'], dropout=0.,
+                    train_images=len(train), test_images=len(rows)-len(train),
+                    train_accuracy=float((p[:len(train)].argmax(1) == self.ctx['y'][train]).mean()),
+                    test_accuracy=float((p[len(train):].argmax(1) == self.ctx['y'][rows[len(train):]]).mean())))
+        rt.finish(tmp, self.c, cell, elapsed_seconds=time.monotonic()-start)
+        os.rename(tmp, final)
+        return 'done'
 
     # --------------------------------------------------------------- v3 inputs
     def v3_cell(self, name):
@@ -183,15 +228,12 @@ class XSession(Session):
                     for e in adj['per_gamma'].values():
                         e.pop('v')
                     base.append(dict(seed=s, attack_seed=k, cls=cls, metrics=met,
-                                     passed=A.class_gate(met, c['gate_auc'], c['gate_bacc']),
                                      qualified_gamma=A.qualified_gamma(adj['per_gamma'], c['attack_solve_tol']),
                                      **{key: adj[key] for key in ('hessian_eig_min', 'hessian_eig_max', 'train_grad_norm', 'q_norm')},
                                      per_gamma=adj['per_gamma']))
         timing['attack_train_seconds_median'] = float(np.median(t_attack))
         timing['attack_adjoint_seconds_median'] = float(np.median(t_adj))
-        qualified = [cls for cls in c['classes'] if all(r['passed'] for r in base if r['cls'] == cls)]
-        if not qualified:
-            raise ValueError('No attack class passes the gate on every full baseline; stop and discuss')
+        qualified = c['primary_classes']
         omega = A.weights(fixed['q_classes'], qualified)
         ok = [g for g in gA if all(r['qualified_gamma'][g] for r in base if r['cls'] in qualified)]
         if not ok:
@@ -254,7 +296,7 @@ class XSession(Session):
             raise ValueError(f'JVP differs from finite differences: {jvp_rows}')
         frozen = dict(qualified_classes=qualified, omega={str(k2): v for k2, v in omega.items()}, attack_gamma_star=gstar,
                       attack_gammas_qualified=ok, query_counts={str(cl): int((fixed['q_classes'] == cl).sum()) for cl in c['classes']},
-                      rule='Classes: AUC and balanced-accuracy gate on all full-baseline attacks. gamma_A*: smallest grid value '
+                      rule='Primary classes are fixed in prepare; attack quality is reported without filtering. gamma_A*: smallest grid value '
                            'with positive damped spectrum and solve residual <= tol for every qualified attack. '
                            'Fixed before any subset outcome is computed.')
         np.savez_compressed(dest / 'fixed_rows.npz', **fixed)
@@ -422,7 +464,9 @@ class XSession(Session):
         proxy = -(G @ h).cpu().numpy()
         ms = solver.multishift_lanczos(hvp, h, c['gammas'], c['lanczos_max_steps'], c['lanczos_est_tol'],
                                        dot=lambda a, b: float(a @ b))
-        arrays = dict(train_rows=self.ctx['train'], proxy=proxy, pred_proxy=self.predictions(proxy), hbar=hbar)
+        from imgdesign import matched_prediction
+        arrays = dict(train_rows=self.ctx['train'], proxy=proxy, pred_proxy=matched_prediction(self.M, proxy),
+                      pred_proxy_delete=self.predictions(proxy), hbar=hbar)
         gates = []
         for g in c['gammas']:
             x = ms['x'].get(g)
@@ -438,7 +482,8 @@ class XSession(Session):
                     q['reasons'].append('non-finite influence scores')
                 else:
                     arrays[f'tau_gamma{g:g}'] = tau
-                    arrays[f'pred_gamma{g:g}'] = self.predictions(tau)
+                    arrays[f'pred_gamma{g:g}'] = matched_prediction(self.M, tau)
+                    arrays[f'pred_delete_gamma{g:g}'] = self.predictions(tau)
                     q['spearman_if_vs_proxy_images'] = spearman(tau, proxy)
             gates.append(q)
         rt.csv_write(tmp / 'lanczos_history.csv', ms['history'])

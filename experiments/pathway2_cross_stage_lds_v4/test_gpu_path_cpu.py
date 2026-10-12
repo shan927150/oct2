@@ -118,7 +118,8 @@ class GpuPathOnCpu(unittest.TestCase):
                      input_sha256=pins, epochs=2, recipe=RECIPE, batch=64, weight_decay=2., design=design,
                      design_name='img32', seeds=seeds, v3_prediction_tol=1e-10, harvest_tol=1e-10,
                      attack=dict(epochs=3, lr=.01, batch=128, hidden=64, deterministic=True), attack_seeds=[5101, 5102],
-                     classes=[0, 1, 2, 3], n_shadow=4, gate_auc=0., gate_bacc=0., attack_gammas=[1., .1],
+                     classes=[0, 1, 2, 3], primary_classes=[1, 2], n_shadow=4,
+                     background_recipe='stable', background_shadows=[0, 1, 2], fixed_shadow_seed=42100, primary_gamma=.3, attack_gammas=[1., .1],
                      attack_solve_tol=1e-10, j00_tol=0., score_seeds=seeds, gammas=[1., .3], lanczos_max_steps=80,
                      lanczos_est_tol=1e-7, probe_steps=8, cg_fail_tol=1e-3)
             c['cells'] = run.make_cells(c)
@@ -130,6 +131,8 @@ class GpuPathOnCpu(unittest.TestCase):
                 sm = root / '.smoke.tmp-t'
                 sm.mkdir()
                 s1 = core4.XSession(c, freeze_to=sm / 'designs.json')
+                for sid in c['background_shadows']:
+                    self.assertEqual(s1.background_shadow(sid, 't'), 'done')
                 s1.xsmoke(sm)
                 rt.finish(sm, c, dict(kind='xsmoke'))
                 sm.rename(root / 'smoke')
@@ -138,7 +141,7 @@ class GpuPathOnCpu(unittest.TestCase):
                 fr = rt.read(root / 'smoke/frozen.json')
                 self.assertLess(res['checks']['adjoint_vs_legacy_rel'], 1e-10)
                 self.assertLessEqual(max(res['checks']['full_prediction_vs_v3_max_abs'].values()), 1e-12)
-                self.assertEqual(fr['qualified_classes'], [0, 1, 2, 3])
+                self.assertEqual(fr['qualified_classes'], [1, 2])
                 self.assertAlmostEqual(sum(fr['omega'].values()), 1.)
                 self.assertIn(fr['attack_gamma_star'], [1., .1])
                 s = core4.XSession(c)

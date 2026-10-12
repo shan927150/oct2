@@ -181,7 +181,8 @@ class PrepareTests(unittest.TestCase):
         return SimpleNamespace(out=str(out), v3_out=str(v3), gammas='1,0.3,0.1,0.03,0.01,0.003', attack_gammas='1,0.1',
                                k_attack=3, attack_seeds='', score_seeds='', j00_tol=1e-6, lanczos_max=300, probe_steps=24,
                                partition='gpuA100x4', fp64_partition='gpuA100x4', score_time='02:00:00', pack_minutes=20.,
-                               concurrency=8, audit='/a')
+                               concurrency=8, audit='/a', primary_classes='1,2', primary_gamma=.03, background_recipe='stable',
+                               cpu_account='acct-cpu', cpu_partition='cpu')
 
     def test_prepare_pins_v3_and_legacy(self):
         import importlib.util
@@ -242,7 +243,7 @@ class AnalysisTests(unittest.TestCase):
                           hessian_eig_min=-.01, train_grad_norm=1e-3) for s in seeds for k in K for cls in C]
         data = dict(frozen=dict(omega=omega, qualified_classes=[0, 1], attack_gamma_star=1.), attack_base=base_rows,
                     smoke=dict(checks={}), M=M, base={}, truth=truth_rows, scores=scores, missing=[])
-        c = dict(seeds=seeds, attack_seeds=K, classes=C, attack_gammas=[1., .1], gammas=[1.], score_seeds=seeds)
+        c = dict(seeds=seeds, attack_seeds=K, classes=C, attack_gammas=[1., .1], gammas=[1.], primary_gamma=1., score_seeds=seeds)
         summary, tables = analysis4.analyze(data, c)
         lad = summary['ladder']
         self.assertAlmostEqual(lad['L1 (gamma_A=1)']['spearman'], 1.)
@@ -256,6 +257,37 @@ class AnalysisTests(unittest.TestCase):
         self.assertAlmostEqual(spearman(truth, truth), 1.)
         self.assertIn('L2-lin - L3 (gamma=1)', summary['differences'])
         self.assertFalse(summary['attack_quality']['2']['qualified'])
+
+
+class SubmitTests(unittest.TestCase):
+    def test_background_dependencies_and_cpu_collection(self):
+        import importlib.util
+        import tempfile
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        spec = importlib.util.spec_from_file_location('run_submit4', Path(__file__).resolve().parent / 'run.py')
+        run = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(run)
+        for background in ([0, 1, 2, 4], []):
+            with self.subTest(background=background), tempfile.TemporaryDirectory() as tmp:
+                c = dict(out=tmp, account='gpu-acct', cpu_account='cpu-acct', cpu_partition='cpu',
+                         partition='gpuA100x4', fp64_partition='gpuA100x4', score_time='02:00:00',
+                         background_shadows=background, seeds=list(range(42, 50)), score_seeds=list(range(42, 50)),
+                         packs=list(range(32)), concurrency=8)
+                with patch.object(run, 'config', return_value=c), patch.object(run.subprocess, 'check_output',
+                      side_effect=[str(i) for i in range(100, 106)]) as submit:
+                    run.submit(SimpleNamespace(out=tmp, score_time=None, fp64_partition=None))
+                jobs = rt.read(Path(tmp) / 'jobs.json')
+                calls = {call.args[0][-1]: call.args[0] for call in submit.call_args_list}
+                self.assertEqual(set(jobs), {'smoke', 'base', 'pack:truth', 'score', 'collect'} | ({'background'} if background else set()))
+                if background:
+                    self.assertIn('--dependency=afterok:' + jobs['background'], calls['smoke'])
+                for mode in ('pack:truth', 'score'):
+                    self.assertIn('--dependency=afterok:' + jobs['base'], calls[mode])
+                self.assertIn('--dependency=afterok:' + jobs['pack:truth'] + ':' + jobs['score'], calls['collect'])
+                self.assertIn('--account=cpu-acct', calls['collect'])
+                self.assertIn('--partition=cpu', calls['collect'])
+                self.assertTrue(any(x.endswith('/collect.slurm') for x in calls['collect']))
 
 
 if __name__ == '__main__':

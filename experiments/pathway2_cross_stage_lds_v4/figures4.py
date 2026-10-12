@@ -31,7 +31,8 @@ def make_all(summary, rep):
             lo, hi = b.get('bootstrap_ci_conditional_on_seed_panel') or [b['spearman']] * 2
             col = BLUE if n.startswith('L1') else ORANGE if n.startswith('L2') else GREEN if n.startswith('L3') else GREY
             ax.bar(i, b['spearman'], width=.55, color=col)
-            ax.errorbar(i, b['spearman'], yerr=[[b['spearman'] - lo], [hi - b['spearman']]], color=INK, capsize=3, lw=1)
+            ax.vlines(i, lo, hi, color=INK, lw=1)
+            ax.hlines([lo, hi], i-.06, i+.06, color=INK, lw=1)
         ax.axhline(0, color=INK, lw=.8)
         if crit:
             ax.axhline(crit, color=INK, lw=1, ls='--', label=f'one-sided 5% level {crit:.2f}')
@@ -39,8 +40,8 @@ def make_all(summary, rep):
         ax.set_xticks(range(len(names)))
         ax.set_xticklabels([n.replace(' (', '\n(') for n in names], fontsize=7.5)
         ax.set_ylim(-1, 1)
-        ax.set_ylabel('LDS vs Delta_value (32 subsets)')
-        ax.set_title('Cross-stage ladder: more truth on the left', fontsize=9, loc='left')
+        ax.set_ylabel(f"LDS vs Delta_value ({summary['design']['m']} subsets)")
+        ax.set_title('Cross-stage approximation diagnostics', fontsize=9, loc='left')
         fig.tight_layout()
         fig.savefig(rep / 'fig1_ladder.png')
         plt.close(fig)

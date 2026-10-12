@@ -133,6 +133,7 @@ def completed(dest, config_hash, expected_cell=None):
                     'smoke': ['result.json', 'designs.json'],
                     'xsmoke': ['result.json', 'designs.json', 'frozen.json', 'fixed_rows.npz'],
                     'base': ['result.json', 'v.npz', 'h.npz'], 'truth': ['result.json'],
+                    'background': ['result.json', 'final.pt', 'interface.npz'],
                     'xscore': ['result.json', 'scores.npz']}.get(kind, [])
         if not set(required) <= set(m['output_sha256']):
             raise ValueError('Required outputs missing from manifest: ' + str(dest))

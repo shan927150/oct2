@@ -3,8 +3,8 @@
 
 Mentor 2026-10-12: rerun the earlier L1/L2/L3 ladder with the updated configuration (50% image
 deletion, smaller damping) and measure how well TDA predicts the cross-stage effect on the
-Stage-2 attack loss. No Stage-1 model is trained: the 8 full and 256 subset models of the v3
-run are reused. Primary truth: Delta_value = J10 - J00 (membership labels fixed).
+Stage-2 attack loss. Shadow3's 8 full and 256 subset models are reused; the other shadows
+use the stable recipe by default. Primary truth: Delta_value = J10 - J00 (membership labels fixed).
 
 Actions: prepare -> submit -> (status | resubmit | queue-report) -> collect.
 """
@@ -27,7 +27,7 @@ import scheduler  # seed32 v2, unchanged
 SCHEMA = 'OCT_cross_stage_lds_v4'
 V3_SCHEMA = 'OCT_image_lds_v3'
 V3_OUT = '/u/yli103/oct2-pathway2-runs/A/image_lds_v3_reviewed_20261010T033831362446826Z'
-TIMES = dict(smoke='02:00:00', base='01:00:00', pack='00:50:00', score='02:00:00')
+TIMES = dict(background='01:00:00', smoke='02:00:00', base='01:00:00', pack='00:50:00', score='02:00:00', collect='00:30:00')
 CELL_MINUTES = 2.5
 
 
@@ -112,6 +112,11 @@ def make_packs(cells, budget):
 
 def prepare(a):
     gammas, gA = floats(a.gammas), floats(a.attack_gammas)
+    primary_classes = ints(a.primary_classes)
+    if not primary_classes or len(set(primary_classes)) != len(primary_classes) or not set(primary_classes) <= {0, 1, 2, 3}:
+        raise ValueError('Primary classes must be distinct OCT class indices')
+    if a.primary_gamma not in gammas:
+        raise ValueError('Primary gamma must be in the Stage-1 grid')
     for grid in (gammas, gA):
         if len(set(grid)) != len(grid) or any(not math.isfinite(g) or g <= 0 for g in grid):
             raise ValueError('Damping grids must be distinct and positive')
@@ -140,13 +145,17 @@ def prepare(a):
              attack=dict(epochs=int(leg['attack_epochs']), lr=float(leg['attack_lr']), batch=int(leg['attack_batch_size']),
                          hidden=64, deterministic=bool(leg.get('deterministic', True))),
              attack_seeds=panel[:a.k_attack], classes=[0, 1, 2, 3], n_shadow=n_shadow,
-             gate_auc=.55, gate_bacc=.53, attack_gammas=gA, attack_solve_tol=1e-10, j00_tol=a.j00_tol,
+             primary_classes=primary_classes, primary_gamma=a.primary_gamma,
+             background_recipe=a.background_recipe, fixed_shadow_seed=int(leg.get('fixed_shadow_seed', 42100)),
+             background_shadows=[s for s in range(n_shadow) if s != 3] if a.background_recipe == 'stable' else [],
+             target_recipe='legacy_fixed', attack_gammas=gA, attack_solve_tol=1e-10, j00_tol=a.j00_tol,
              score_seeds=score_seeds, gammas=gammas, lanczos_max_steps=a.lanczos_max, lanczos_est_tol=1e-5,
              probe_steps=a.probe_steps, cg_fail_tol=1e-3, concurrency=a.concurrency, pack_minutes=a.pack_minutes,
              partition=a.partition, fp64_partition=a.fp64_partition, score_time=a.score_time,
-             primary='Delta_value = J10 - J00 of the image-weighted attack CE over qualified classes; raw Stage-1 endpoint',
-             holdout_policy='Subsets, seeds, attack seeds, damping grids and gates are fixed here; '
-                            'qualified classes and gamma_A* are frozen by smoke from full baselines only.')
+             cpu_account=a.cpu_account, cpu_partition=a.cpu_partition,
+             primary='Delta_value = J10 - J00 of the image-weighted attack CE over prespecified classes; raw Stage-1 endpoint',
+             holdout_policy='Subsets, seeds, attack seeds, classes and primary Stage-1 damping are fixed here; '
+                            'gamma_A* is determined from full-baseline Hessians only. Attack quality does not filter classes.')
     c['cells'] = make_cells(c)
     c['packs'] = make_packs(c['cells'], a.pack_minutes)
     rt.save_config(c)
@@ -165,9 +174,11 @@ def launcher(c, ledger):
 
     def launch(mode, extra, partition, label=None):
         label = label or mode.replace(':', '_')
-        cmd = ['sbatch', '--parsable', '--account=' + c['account'], '--partition=' + partition,
+        account = c['cpu_account'] if mode == 'collect' else c['account']
+        script = 'collect.slurm' if mode == 'collect' else 'job.slurm'
+        cmd = ['sbatch', '--parsable', '--account=' + account, '--partition=' + partition,
                '--job-name=oct_x4_' + label, '--output=' + str(out / 'logs/%x-%A_%a.out'),
-               '--error=' + str(out / 'logs/%x-%A_%a.err'), *extra, str(rt.HERE / 'job.slurm'),
+               '--error=' + str(out / 'logs/%x-%A_%a.err'), *extra, str(rt.HERE / script),
                str(rt.HERE), str(out), mode]
         pending = out / 'submission_pending.json'
         rt.write(pending, dict(mode=mode, command=cmd, time=time.time()))
@@ -215,13 +226,20 @@ def submit(a):
     scheduler.receipts(out)
     with (out / 'submission.jsonl').open('x') as ledger:
         launch = launcher(c, ledger)
-        jobs = dict(smoke=launch('smoke', ['--time=' + TIMES['smoke']], c['partition']))
+        jobs = {}
+        if c['background_shadows']:
+            jobs['background'] = launch('background', ['--time=' + TIMES['background'],
+                   array(list(range(len(c['background_shadows']))), c['concurrency'])], c['partition'])
+        jobs['smoke'] = launch('smoke', ['--time=' + TIMES['smoke'],
+                    *(after(jobs['background']) if 'background' in jobs else [])], c['partition'])
         jobs['base'] = launch('base', ['--time=' + TIMES['base'], array(list(range(len(c['seeds']))), c['concurrency']),
                                        *after(jobs['smoke'])], c['partition'])
         jobs['pack:truth'] = launch('pack:truth', ['--time=' + TIMES['pack'], array(list(range(len(c['packs']))), c['concurrency']),
                                                    *after(jobs['base'])], c['partition'])
         jobs['score'] = launch('score', ['--time=' + walltime(c, 'score', a), array(list(range(len(c['score_seeds']))), c['concurrency']),
                                          *after(jobs['base'])], partition(c, 'score', a))
+        jobs['collect'] = launch('collect', ['--time=' + TIMES['collect'],
+                                *after(jobs['pack:truth'] + ':' + jobs['score'])], c['cpu_partition'])
     (out / 'jobs.json').write_text(json.dumps(jobs, indent=2) + '\n')
     print('\n'.join(f'{k}={v}' for k, v in jobs.items()))
 
@@ -236,7 +254,9 @@ def incomplete(c):
         rt.completed(d, h, cell)
         return True
     cells = {cell['name']: cell for cell in c['cells']}
-    return {'base': [i for i, s in enumerate(c['seeds']) if not done(out / 'base' / f'seed{s}', dict(kind='base', seed=s))],
+    return {'background': [i for i, s in enumerate(c['background_shadows'])
+                           if not done(out / 'background' / f'shadow{s}', dict(kind='background', shadow=s))],
+            'base': [i for i, s in enumerate(c['seeds']) if not done(out / 'base' / f'seed{s}', dict(kind='base', seed=s))],
             'pack:truth': [i for i, p in enumerate(c['packs']) if not all(done(out / 'truth' / n, cells[n]) for n in p)],
             'score': [i for i, s in enumerate(c['score_seeds']) if not done(out / 'score' / f'seed{s}', dict(kind='xscore', seed=s))]}
 
@@ -249,8 +269,8 @@ def status(a):
     if smoke:
         rt.completed(out / 'smoke', rt.sha(out / 'config.json'), dict(kind='xsmoke'))
         fr = rt.read(out / 'smoke/frozen.json')
-        print('qualified classes:', fr['qualified_classes'], 'omega:', fr['omega'], 'gamma_A*:', fr['attack_gamma_star'])
-    sizes = dict(base=len(c['seeds']), score=len(c['score_seeds']))
+        print('primary classes:', fr['qualified_classes'], 'omega:', fr['omega'], 'gamma_A*:', fr['attack_gamma_star'])
+    sizes = dict(background=len(c['background_shadows']), base=len(c['seeds']), score=len(c['score_seeds']))
     sizes['pack:truth'] = len(c['packs'])
     for k, v in incomplete(c).items():
         print(f'{k}: {sizes[k] - len(v)}/{sizes[k]} complete; incomplete indices {v[:20]}{" ..." if len(v) > 20 else ""}')
@@ -266,10 +286,24 @@ def resubmit(a):
     c = config(a.out)
     out = Path(c['out'])
     previous = scheduler.receipts(out)
-    modes = ['smoke', 'base', 'pack:truth', 'score']
+    modes = ['background', 'smoke', 'base', 'pack:truth', 'score']
     selected = a.only.split(',') if a.only else None
     if selected and any(m not in modes for m in selected):
         raise ValueError('Unknown --only mode')
+    bg = incomplete(c)['background']
+    if bg:
+        scheduler.require_terminal([r for r in previous if r['mode'] in ('background', 'smoke')])
+        with (out / 'submission.jsonl').open('a') as ledger:
+            launch = launcher(c, ledger)
+            j = launch('background', ['--time=' + TIMES['background'], array(bg, c['concurrency'])], c['partition'], 'background_re')
+            print('background', j)
+            print('smoke', launch('smoke', ['--time=' + TIMES['smoke'], '--dependency=afterok:' + j,
+                                           '--kill-on-invalid-dep=yes'], c['partition'], 'smoke_re'))
+        print('Resubmit the remaining tasks after smoke completes.')
+        return
+    if selected == ['background']:
+        print('Background shadows already complete')
+        return
     if selected == ['smoke'] or not (out / 'smoke/complete.json').exists():
         scheduler.require_terminal([r for r in previous if r['mode'] == 'smoke'])
         if (out / 'smoke/complete.json').exists():
@@ -343,6 +377,16 @@ def gpu(a):
     tag = f"{os.environ.get('SLURM_JOB_ID', 'local')}_{os.environ.get('SLURM_ARRAY_TASK_ID', '0')}_{os.getpid()}"
     started = time.monotonic()
     mode, _, group = a.mode.partition(':')
+    if mode == 'background':
+        # Background jobs precede smoke; generate no shared design output here.
+        dest = root / f'.background-design-{tag}.json'
+        try:
+            session = XSession(c, freeze_to=dest)
+            sid = c['background_shadows'][a.index]
+            print(f'background shadow{sid}', session.background_shadow(sid, tag), flush=True)
+        finally:
+            dest.unlink(missing_ok=True)
+        return
     if mode == 'smoke':
         final = root / 'smoke'
         if final.exists():
@@ -446,6 +490,10 @@ def main():
     q.add_argument('--audit', default=rt.AUDIT)
     q.add_argument('--v3-out', default=V3_OUT)
     q.add_argument('--k-attack', type=int, default=3, help='attack seeds taken from the legacy crossed panel')
+    q.add_argument('--background-recipe', choices=['stable', 'legacy'], default='stable',
+                   help='recipe for shadows 0/1/2/4; shadow3 is reused from v3 and target stays fixed')
+    q.add_argument('--primary-classes', default='1,2', help='fixed primary classes; all four classes are also reported')
+    q.add_argument('--primary-gamma', type=float, default=.03)
     q.add_argument('--attack-seeds', default='', help='override the legacy panel, comma list')
     q.add_argument('--attack-gammas', default='1,0.3,0.1,0.03,0.01')
     q.add_argument('--gammas', default='1,0.3,0.1,0.03,0.01,0.003', help='Stage-1 damping grid')
@@ -454,6 +502,8 @@ def main():
     q.add_argument('--lanczos-max', type=int, default=300)
     q.add_argument('--probe-steps', type=int, default=24)
     q.add_argument('--partition', default='gpuA100x4', help='smoke, base and truth (one GPU type)')
+    q.add_argument('--cpu-account', default='bgjy-delta-cpu')
+    q.add_argument('--cpu-partition', default='cpu')
     q.add_argument('--fp64-partition', default='gpuA100x4', help='Stage-1 IF score jobs')
     q.add_argument('--score-time', default=TIMES['score'])
     q.add_argument('--pack-minutes', type=float, default=20.)
@@ -467,7 +517,7 @@ def main():
         if name == 'collect':
             q.add_argument('--allow-partial', action='store_true')
         if name == 'resubmit':
-            q.add_argument('--only', default=None, help='comma list of base,pack:truth,score (or smoke)')
+            q.add_argument('--only', default=None, help='comma list of base,pack:truth,score (or background/smoke)')
         if name in ('submit', 'resubmit'):
             q.add_argument('--score-time', default=None, help='override score walltime')
             q.add_argument('--fp64-partition', default=None, help='override the score partition')

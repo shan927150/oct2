@@ -96,7 +96,10 @@ def l3_predictions(data, c, gamma):
 
 def paired_difference(p1, p2, truth, draws=2000, seed=20261012):
     rng = np.random.default_rng(seed)
-    base = spearman(p1, truth) - spearman(p2, truth)
+    a, b = spearman(p1, truth), spearman(p2, truth)
+    if a is None or b is None:
+        return None
+    base = a - b
     vals = []
     for _ in range(draws):
         i = rng.integers(len(truth), size=len(truth))
@@ -163,7 +166,8 @@ def analyze(data, c):
             l3_seed[g] = P
         summary['l3_gamma'][f'{g:g}'] = entry
     qualified_g = [g for g in c['gammas'] if g in l3_seed]
-    gamma_star = min(qualified_g) if qualified_g else None
+    primary_gamma = c['primary_gamma']
+    gamma_star = primary_gamma if primary_gamma in qualified_g else None
     if all(s in data['scores'] for s in c['score_seeds']):
         preds['proxy'] = np.mean([data['scores'][s]['arrays']['pred_proxy'] for s in c['score_seeds']], 0)
     # ---------------------------------------------------------------- truth stability
@@ -191,6 +195,8 @@ def analyze(data, c):
                                          f'L1 (gamma_A={gstar:g})', 'L2-retrain', 'L2-lin', 'proxy') or
                                      (gamma_star is not None and name == f'L3 (gamma={gamma_star:g})')))
     summary['ladder_gamma_star'] = gamma_star
+    summary['primary_gamma'] = primary_gamma
+    summary['primary_gamma_status'] = summary['l3_gamma'][f'{primary_gamma:g}']['status']
     # paired differences between adjacent rungs
     l3n = f'L3 (gamma={gamma_star:g})' if gamma_star is not None else None
     pairs = [(f'L1 (gamma_A={gstar:g})', 'L2-retrain'), ('L2-retrain', 'L2-lin'), ('L2-lin', l3n), (l3n, 'proxy'),
@@ -198,6 +204,8 @@ def analyze(data, c):
     for a, b in pairs:
         if a in preds and b in preds and a != b:
             d = paired_difference(preds[a], preds[b], truth)
+            if d is None:
+                continue
             summary['differences'][f'{a} - {b}'] = d
             tables['differences'].append(dict(pair=f'{a} - {b}', difference=d['difference'], ci_low=d['ci'][0],
                                               ci_high=d['ci'][1], fraction_not_better=d['fraction_not_better']))
@@ -225,14 +233,16 @@ def analyze(data, c):
         sp = [r['spearman_if_vs_proxy_images'] for r in e['by_seed'] if r.get('spearman_if_vs_proxy_images') is not None]
         tables['l3_gamma'].append(dict(gamma=g, status=e['status'], lds=lds,
                                        mean_spearman_if_vs_proxy=float(np.mean(sp)) if sp else None,
-                                       max_true_rel_residual=max((r['true_rel_residual'] or np.inf) for r in e['by_seed']) if e['by_seed'] else None,
+                                       max_true_rel_residual=max(r['true_rel_residual'] if r['true_rel_residual'] is not None else np.inf
+                                                                 for r in e['by_seed']) if e['by_seed'] else None,
                                        max_lanczos_steps=max(r['lanczos_steps'] for r in e['by_seed']) if e['by_seed'] else None))
     cells = list(data['truth'].values())
     for g in ('deleted', 'retained', 'nonmember'):
         summary['drift'][g] = {k: float(np.mean([x['drift'][g][k] for x in cells])) for k in cells[0]['drift'][g]}
     summary['drift']['jvp_row_clip_rate_mean'] = float(np.mean([x['jvp']['row_clip_rate'] for x in cells]))
     summary['drift']['dtheta_norm_mean'] = float(np.mean([x['dtheta_norm'] for x in cells]))
-    summary['prespecified'] = dict(primary='Delta_value of image-weighted attack CE over qualified classes',
-                                   attack_gamma_star=gstar, stage1_gamma_star_rule='smallest gamma qualified for every score seed',
+    summary['prespecified'] = dict(primary='Delta_value of image-weighted attack CE over prespecified classes',
+                                   attack_gamma_star=gstar, stage1_gamma_star_rule='fixed in prepare',
+                                   stage1_primary_gamma=primary_gamma, l3_normalization='matched subset mean CE',
                                    rule='No damping value is chosen by LDS.')
     return summary, tables

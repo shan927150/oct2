@@ -21,9 +21,10 @@ def render(s, c, figs, partial):
         L += [f"> **部分结果**：{len(s['missing'])} 项未完成，只用全部子集都完成的训练 seed。", '']
     L += [f"{d['m']} 个子集（每个保留 {d['retained_images']:,} 张 shadow3 训练图像），训练 seed {d['seeds_complete']}，"
           f"attack seed {d['attack_seeds']}，score seed {d['score_seeds']}。真值 Δvalue = J10 − J00（成员标签不变）；"
-          f"J 是合格类别 target query 按图像等权的攻击 CE。统计单位是子集，单侧 5% 门槛 {s['critical_spearman']:.2f}。", '',
-          f"冻结（smoke，只用全数据模型）：合格类别 {fr['qualified_classes']}，权重 {fr['omega']}，attack 阻尼 γ_A* = {fr['attack_gamma_star']:g}。", '']
-    L += ['## Attack 质量（全数据模型，smoke）', '', '| 类别 | 合格 | ω | AUC 均值 | AUC 最小 | bal acc 最小 | J00 | λmin(H_A) 范围 | ‖∇L_A‖ 最大 |',
+          f"J 是预设主类别 target query 按图像等权的攻击 CE。统计单位是子集，单侧 5% 门槛 {s['critical_spearman']:.2f}。", '',
+          f"冻结（smoke，只用全数据模型）：预设主类别 {fr['qualified_classes']}，权重 {fr['omega']}，attack 阻尼 γ_A* = {fr['attack_gamma_star']:g}。", '']
+    L += [f"背景 shadow 配方：{c['background_recipe']}；shadow3：稳定配方；target：旧模型固定。Attack 质量只报告，不筛掉类别。", '']
+    L += ['## Attack 质量（全数据模型，smoke）', '', '| 类别 | 主类别 | ω | AUC 均值 | AUC 最小 | bal acc 最小 | J00 | λmin(H_A) 范围 | ‖∇L_A‖ 最大 |',
           '|---|---|---|---|---|---|---|---|---|']
     for cls, a in s['attack_quality'].items():
         L.append(f"| {cls} | {a['qualified']} | {a['omega']:.3f} | {a['auc_mean']:.3f} | {a['auc_min']:.3f} | "
@@ -38,7 +39,7 @@ def render(s, c, figs, partial):
             L.append('训练 seed 不重叠两组的子集排序可重复性：' + '；'.join(f"k={r['k']}：{r['split_spearman_mean']:.3f}" for r in rows) + '。')
         if t.get('attack_seed_pairwise'):
             L.append('attack seed 两两（对全部训练 seed 平均后）：' + '；'.join(f"{r['a']}–{r['b']}：{f(r['spearman'])}" for r in t['attack_seed_pairwise']) + '。')
-    L += ['', '## 梯子（左边用的真值越多）', '', '| 层 | LDS | 95% CI | 置换 p | 斜率 | 相对误差 |', '|---|---|---|---|---|---|']
+    L += ['', '## 跨阶段近似诊断', '', 'L1 与 L2-retrain 分别线性化不同环节，其 LDS 差不是可相加的误差分解。L3/proxy 的幅度采用 matched 子集平均损失归一化。', '', '| 层 | LDS | 95% CI | 置换 p | 斜率 | 相对误差 |', '|---|---|---|---|---|---|']
     for name, b in s['ladder'].items():
         L.append(f"| {name} | {f(b.get('spearman'))} | {ci(b)} | {p(b.get('permutation_p_one_sided'))} | "
                  f"{f(b.get('slope_truth_on_prediction'), 2)} | {f(b.get('relative_error'), 3)} |")
@@ -49,8 +50,8 @@ def render(s, c, figs, partial):
     L += ['', '## L3 的 Stage-1 阻尼 γ（事先固定，不按 LDS 选）', '', '| γ | 状态 | LDS |', '|---|---|---|']
     for g, e in s['l3_gamma'].items():
         L.append(f"| {g} | {str(e['status'])[:70]} | {f((s['ladder'].get(f'L3 (gamma={g})') or {}).get('spearman'))} |")
-    L += ['', f"主报告的 γ = 全部 score seed 都合格的最小 γ：{s.get('ladder_gamma_star')}。", '']
-    L += ['## 逐类别（不加权，只含用真值的层）', '', '| 类别 | 合格 | L1 | L2-retrain | L2-lin |', '|---|---|---|---|---|']
+    L += ['', f"预设主 γ = {c['primary_gamma']:g}；状态：{s.get('primary_gamma_status', '尚无完整真值')}。", '']
+    L += ['## 逐类别（不加权，只含用真值的层）', '', '| 类别 | 主类别 | L1 | L2-retrain | L2-lin |', '|---|---|---|---|---|']
     for cls, e in s['ladder_per_class'].items():
         r = e['rungs']
         L.append(f"| {cls} | {e['qualified']} | {f(r['L1'].get('spearman'))} | {f(r['L2-retrain'].get('spearman'))} | {f(r['L2-lin'].get('spearman'))} |")
