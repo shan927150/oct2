@@ -117,7 +117,7 @@ class GpuPathOnCpu(unittest.TestCase):
                      seed32_out=str(s32), v3_out=str(v3), v3_config_sha256=rt.sha(v3 / 'config.json'), v3_cells=v3_cells,
                      input_sha256=pins, epochs=2, recipe=RECIPE, batch=64, weight_decay=2., design=design,
                      design_name='img32', seeds=seeds, v3_prediction_tol=1e-10, harvest_tol=1e-10,
-                     h_chain_fd_rel_tol=5e-3,
+                     h_chain_fd_rel_tol=5e-3, jvp_fd_max_rel_tol=2e-3,
                      attack=dict(epochs=3, lr=.01, batch=128, hidden=64, deterministic=True), attack_seeds=[5101, 5102],
                      classes=[0, 1, 2, 3], primary_classes=[1, 2], n_shadow=4,
                      background_recipe='stable', background_shadows=[0, 1, 2], fixed_shadow_seed=42100, primary_gamma=.3, attack_gammas=[1., .1],
@@ -141,6 +141,7 @@ class GpuPathOnCpu(unittest.TestCase):
                 res = rt.read(root / 'smoke/result.json')
                 fr = rt.read(root / 'smoke/frozen.json')
                 self.assertLess(res['checks']['adjoint_vs_legacy_rel'], 1e-10)
+                self.assertLessEqual(res['checks']['jvp_fd_best_relative_error'], c['jvp_fd_max_rel_tol'])
                 self.assertLessEqual(max(res['checks']['full_prediction_vs_v3_max_abs'].values()), 1e-12)
                 self.assertEqual(fr['qualified_classes'], [1, 2])
                 self.assertAlmostEqual(sum(fr['omega'].values()), 1.)

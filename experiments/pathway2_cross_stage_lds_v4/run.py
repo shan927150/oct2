@@ -142,7 +142,7 @@ def prepare(a):
              seed32_out=cfg['seed32_out'], baseline_out=cfg['baseline_out'], lds_pilot_out=cfg['lds_pilot_out'],
              seeds=list(cfg['seeds']), epochs=cfg['epochs'], recipe=cfg['recipe'], design_name=cfg['design_name'],
              design=cfg['design'], v3_prediction_tol=1e-10, harvest_tol=cfg['harvest_tol'],
-             h_chain_fd_rel_tol=5e-3,
+             h_chain_fd_rel_tol=5e-3, jvp_fd_max_rel_tol=2e-3,
              attack=dict(epochs=int(leg['attack_epochs']), lr=float(leg['attack_lr']), batch=int(leg['attack_batch_size']),
                          hidden=64, deterministic=bool(leg.get('deterministic', True))),
              attack_seeds=panel[:a.k_attack], classes=[0, 1, 2, 3], n_shadow=n_shadow,
