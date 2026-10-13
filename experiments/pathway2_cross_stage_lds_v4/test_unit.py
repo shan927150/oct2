@@ -29,6 +29,25 @@ def simplex(rng, n):
 
 
 class AdjointTests(unittest.TestCase):
+    def test_cnn_forward_reverse_chain_rule(self):
+        """Independent AD identity v^T (J d) = (J^T v)^T d, without finite differences."""
+        import torch
+        score, pl = pilot()
+        torch.manual_seed(5)
+        model = pl.build_model('cnn', 1, 128, 4).cpu().double().eval()
+        rng = np.random.default_rng(5)
+        X = rng.normal(size=(5, 1, 16, 16))
+        v = rng.normal(size=(5, 4))
+        theta = score.flatten([p.detach() for p in score.flat_params(model)])
+        direction = torch.randn_like(theta)
+        direction /= direction.norm()
+        h = score.shadow_h(model, X, v, torch.device('cpu'), batch=2)
+        lin = score.linearized_predictions(model, X, direction, torch.device('cpu'), batch=2)
+        with torch.no_grad():
+            p0 = model(torch.as_tensor(X)).softmax(1).numpy()
+        np.testing.assert_allclose(float(np.sum(v * (lin['raw'] - p0))), float(h @ direction),
+                                   rtol=1e-8, atol=1e-12)
+
     def test_damped_adjoint_equals_ridge_reoptimisation(self):
         """With phi* stationary for CE + gamma/2 |phi|^2, v = dJ/dp exactly (Eq. 11-21 with damping as ridge)."""
         import torch
@@ -205,6 +224,7 @@ class PrepareTests(unittest.TestCase):
                 self.assertEqual(c['score_seeds'], [42, 43])
                 self.assertEqual(c['h_chain_fd_rel_tol'], 5e-3)
                 self.assertEqual(c['jvp_fd_max_rel_tol'], 2e-3)
+                self.assertEqual(c['finite_difference_policy'], 'diagnostic_only')
                 self.assertEqual(len(c['cells']), 6)
                 self.assertTrue(all(str(v3 / 'cells' / x['name'] / 'complete.json') in c['input_sha256'] for x in c['v3_cells']))
                 self.assertIn(str(full / 'checkpoints/shadow_2_fixed.pt'), c['input_sha256'])

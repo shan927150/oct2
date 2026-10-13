@@ -24,6 +24,22 @@ def render(s, c, figs, partial):
           f"J 是预设主类别 target query 按图像等权的攻击 CE。统计单位是子集，单侧 5% 门槛 {s['critical_spearman']:.2f}。", '',
           f"冻结（smoke，只用全数据模型）：预设主类别 {fr['qualified_classes']}，权重 {fr['omega']}，attack 阻尼 γ_A* = {fr['attack_gamma_star']:g}。", '']
     L += [f"背景 shadow 配方：{c['background_recipe']}；shadow3：稳定配方；target：旧模型固定。Attack 质量只报告，不筛掉类别。", '']
+    checks = s.get('smoke_checks') or {}
+    if any(key in checks for key in ('h_chain_fd_diagnostic', 'jvp_fd_diagnostic')):
+        L += ['## 数值诊断', '',
+              '有限差分偏差记录在结果中，有限数值超过参考容差时继续运行。ReLU 和 MaxPool 的分段边界可能影响有限差分，'
+              '这些数值不能单独证明求导正确，也不验证 50% 删除位移的线性近似准确性。', '',
+              '| 比较 | 最佳相对误差 | 参考容差 | 超过参考容差 |', '|---|---|---|---|']
+        for name, key in (('h 链式求导 vs 有限差分', 'h_chain_fd_diagnostic'), ('JVP vs 有限差分', 'jvp_fd_diagnostic')):
+            e = checks.get(key)
+            if e:
+                L.append(f"| {name} | {e['best_relative_error']:.3%} | {e['reference_relative_tolerance']:.3%} | {e['above_reference']} |")
+        L += ['']
+    replay = s.get('baseline_replay') or {}
+    if replay.get('base_vs_smoke_max_abs') is not None:
+        L += [f"J00 复现最大绝对差：base 对 smoke {replay['base_vs_smoke_max_abs']:.3e}，"
+              f"pack 对 base {replay['pack_vs_base_max_abs'] if replay.get('pack_vs_base_max_abs') is not None else '尚无'}。"
+              f"绝对容差 {replay['absolute_tolerance']}。", '']
     L += ['## Attack 质量（全数据模型，smoke）', '', '| 类别 | 主类别 | ω | AUC 均值 | AUC 最小 | bal acc 最小 | J00 | λmin(H_A) 范围 | ‖∇L_A‖ 最大 |',
           '|---|---|---|---|---|---|---|---|---|']
     for cls, a in s['attack_quality'].items():

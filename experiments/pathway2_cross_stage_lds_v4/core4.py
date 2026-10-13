@@ -15,6 +15,7 @@ import time
 import numpy as np
 import runtime as rt
 import attack4 as A
+from numerics4 import finite_difference_diagnostic, require_replay_close
 from functools import wraps
 from core3 import Session, staged, exclusive  # image LDS v3, unchanged
 
@@ -204,10 +205,9 @@ class XSession(Session):
         diffs = {}
         for s in c['seeds']:
             p, _ = self.predict(self.model(self.full_name(s), s))
-            diffs[s] = float(np.abs(p - self.v3_probs(self.full_name(s))).max())
+            diffs[s] = require_replay_close(f'Full-model predictions vs v3, seed {s}', p,
+                                           self.v3_probs(self.full_name(s)), c['v3_prediction_tol'])
         checks['full_prediction_vs_v3_max_abs'] = diffs
-        if max(diffs.values()) > c['v3_prediction_tol']:
-            raise ValueError(f'Full-model predictions differ from the v3 interface: {diffs}')
         # 4) attack gate and attack-Hessian spectra on every full baseline (no subset outcome is read)
         gA = c['attack_gammas']
         base, t_attack, t_adj = [], [], []
@@ -282,9 +282,9 @@ class XSession(Session):
             fd_rows.append(dict(eps=eps, fd=fd, analytic=analytic, absolute_error=err,
                                 relative_error=err / max(abs(analytic), 1e-12)))
         checks['h_chain_fd'] = fd_rows
-        checks['h_chain_fd_best_relative_error'] = min(r['relative_error'] for r in fd_rows)
-        if checks['h_chain_fd_best_relative_error'] > c['h_chain_fd_rel_tol']:
-            raise ValueError(f'h chain rule differs from finite differences: {fd_rows}')
+        checks['h_chain_fd_diagnostic'] = finite_difference_diagnostic(
+            'h chain rule vs finite differences', fd_rows, 'relative_error', c['h_chain_fd_rel_tol'])
+        checks['h_chain_fd_best_relative_error'] = checks['h_chain_fd_diagnostic']['best_relative_error']
         sync(); t0 = time.monotonic()
         lin = self.score.linearized_predictions(model, self.ctx['X'][self.rows3], dtheta, self.dev, self.c['batch'])
         sync(); timing['jvp_seconds'] = time.monotonic() - t0
@@ -298,11 +298,9 @@ class XSession(Session):
             jvp_rows.append(dict(eps=eps, max_abs_error=max_abs_error, scale=scale,
                                  max_relative_error=max_abs_error / max(scale, 1e-12)))
         checks['jvp_vs_fd'] = jvp_rows
-        checks['jvp_fd_best_relative_error'] = min(r['max_relative_error'] for r in jvp_rows)
-        # The full deletion displacement crosses ReLU/max-pool boundaries. A finite
-        # difference of this non-smooth CNN need not agree to 1e-5 in max norm.
-        if checks['jvp_fd_best_relative_error'] > c['jvp_fd_max_rel_tol']:
-            raise ValueError(f'JVP differs from finite differences: {jvp_rows}')
+        checks['jvp_fd_diagnostic'] = finite_difference_diagnostic(
+            'JVP vs finite differences', jvp_rows, 'max_relative_error', c['jvp_fd_max_rel_tol'])
+        checks['jvp_fd_best_relative_error'] = checks['jvp_fd_diagnostic']['best_relative_error']
         frozen = dict(qualified_classes=qualified, omega={str(k2): v for k2, v in omega.items()}, attack_gamma_star=gstar,
                       attack_gammas_qualified=ok, query_counts={str(cl): int((fixed['q_classes'] == cl).sum()) for cl in c['classes']},
                       rule='Primary classes are fixed in prepare; attack quality is reported without filtering. gamma_A*: smallest grid value '
@@ -347,9 +345,8 @@ class XSession(Session):
             for ci, cls in enumerate(c['classes']):
                 out, _ = self.condition(fixed, p3, k, cls, adjoint_gammas=gA)
                 ref = smoke[(seed, k, cls)]['metrics']['cross_entropy']
-                diff = abs(out['metrics']['cross_entropy'] - ref)
-                if diff > c['j00_tol']:
-                    raise ValueError(f'J00 differs from smoke for seed {seed} attack {k} class {cls}: {diff}')
+                diff = require_replay_close(f'J00 vs smoke, seed {seed} attack {k} class {cls}',
+                                            out['metrics']['cross_entropy'], ref, c['j00_tol'])
                 for gi, g in enumerate(gA):
                     V[ki, ci, gi] = out['v'][g]
                 v_star[cls] = out['v'][gstar]
@@ -413,6 +410,7 @@ class XSession(Session):
                 j10, _ = self.condition(fixed, p_sub, k, cls)
                 jhat, _ = self.condition(fixed, p_hat, k, cls)
                 rows.append(dict(attack_seed=k, cls=cls, J00=J00[(k, cls)], J10=j10['metrics']['cross_entropy'],
+                                 J00_minus_base=J00[(k, cls)] - J00_base[(k, cls)],
                                  J_L2_retrain=jhat['metrics']['cross_entropy'],
                                  auc10=j10['metrics']['auc'], auc_L2_retrain=jhat['metrics']['auc'],
                                  L1={f'{g:g}': float((V[ki, ci, gi][sel] * dP[sel]).sum()) for gi, g in enumerate(c['attack_gammas'])},
@@ -441,8 +439,8 @@ class XSession(Session):
                 for cls in self.c['classes']:
                     r, _ = self.condition(fixed, p3, k, cls)
                     out[(k, cls)] = r['metrics']['cross_entropy']
-                    if abs(out[(k, cls)] - J00_base[(k, cls)]) > self.c['j00_tol']:
-                        raise ValueError(f'Pack J00 differs from base for seed {seed}, attack {k}, class {cls}')
+                    require_replay_close(f'Pack J00 vs base, seed {seed} attack {k} class {cls}',
+                                         out[(k, cls)], J00_base[(k, cls)], self.c['j00_tol'])
             cache[seed] = out
             self._j00 = cache
         return cache[seed]

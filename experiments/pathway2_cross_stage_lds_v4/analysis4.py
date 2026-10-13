@@ -124,6 +124,12 @@ def analyze(data, c):
                    frozen=fr, missing=data['missing'], critical_spearman=S.critical_spearman(m),
                    smoke_checks=data['smoke'].get('checks'), attack_quality={}, truth={}, ladder={}, ladder_per_class={},
                    differences={}, l3_gamma={}, drift={}, seed_curves={})
+    summary['baseline_replay'] = dict(
+        absolute_tolerance=c.get('j00_tol'),
+        base_vs_smoke_max_abs=max((abs(r['J00_minus_smoke']) for b in data['base'].values()
+                                  for r in b['rows']), default=None),
+        pack_vs_base_max_abs=max((abs(r['J00_minus_base']) for t in data['truth'].values()
+                                 for r in t['rows'] if 'J00_minus_base' in r), default=None))
     tables = dict(ladder=[], ladder_per_class=[], l3_gamma=[], attack_quality=[], differences=[])
     # ---------------------------------------------------------- attack quality (full baselines, smoke)
     for cls in c['classes']:
