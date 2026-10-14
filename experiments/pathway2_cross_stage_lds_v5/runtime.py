@@ -141,10 +141,11 @@ def completed(dest, config_hash, expected_cell=None):
         required = {'full': ['result.json', 'interface.npz'], 'subset': ['result.json', 'interface.npz'],
                     'proxy': ['result.json', 'proxy.npz'], 'score': ['result.json', 'scores.npz'],
                     'smoke': ['result.json', 'designs.json'],
-                    'xsmoke': ['result.json', 'designs.json', 'frozen.json', 'fixed_rows.npz', 'gate.json'],
+                    'xsmoke': ['result.json', 'designs.json', 'frozen.json', 'fixed_rows.npz'],  # v4 runs validate too
                     'base': ['result.json', 'v.npz', 'h.npz'], 'truth': ['result.json'],
                     'background': ['result.json', 'final.pt', 'interface.npz'],
                     'target': ['result.json', 'final.pt', 'interface.npz'], 'hybrid': ['result.json'],
+                    'interp': ['result.json'],
                     'xscore': ['result.json', 'scores.npz']}.get(kind, [])
         if not set(required) <= set(m['output_sha256']):
             raise ValueError('Required outputs missing from manifest: ' + str(dest))

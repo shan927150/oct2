@@ -1,9 +1,11 @@
-"""v5 on CPU with a tiny synthetic OCT-like context: a v3-style run (full + subset Stage-1 models built
-with the frozen stable kernel), legacy checkpoints, then background shadows + stable target -> smoke
-(with a forced gate failure first) -> base -> truth + hybrid -> score -> collect."""
+"""v5 r1 on CPU with a tiny synthetic OCT-like context: a v3-style run (full + subset Stage-1 models built
+with the frozen stable kernel), legacy checkpoints, then background shadows + stable target -> verified
+reuse of those shadows into a second OUT -> smoke (with a forced gate failure first) -> base ->
+truth + hybrid -> score -> interp -> collect."""
 import argparse
 import importlib.util
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -122,7 +124,7 @@ class GpuPathOnCpu(unittest.TestCase):
                      classes=[0, 1, 2, 3], primary_classes=[1, 2], n_shadow=4,
                      background_recipe='stable', background_shadows=[0, 1, 2], fixed_shadow_seed=42100, primary_gamma=.3, attack_gammas=[1., .1],
                      background_jobs=[0, 1, 2, 'target'], target_recipe='stable', target_seed=42007, j00_gate=50.,
-                     adjoint_identity_rel_tol=1e-9, v4_reference_out='/v4',
+                     adjoint_identity_rel_tol=1e-9, interp=dict(subsets=[0, 1], seeds=[42], ts=[1e-3, .1, 1.]),
                      attack_solve_tol=1e-10, j00_tol=0., score_seeds=seeds, gammas=[1., .3], lanczos_max_steps=80,
                      lanczos_est_tol=1e-7, probe_steps=8, cg_fail_tol=1e-3)
             c['cells'] = run.make_cells(c)
@@ -141,10 +143,33 @@ class GpuPathOnCpu(unittest.TestCase):
                 tg = rt.read(root / 'background/target/result.json')
                 self.assertEqual(tg['seed'], 42007)
                 self.assertEqual(tg['train_images'], 24)
+                self.assertIn('by_class', tg['p_true'])
+                # ---- verified reuse of those shadows into a second OUT (the v4 -> v5 path on Delta)
+                root2 = tmp / 'exp2'
+                root2.mkdir()
+                src = {str(sid): str(root / 'background' / f'shadow{sid}') for sid in c['background_shadows']}
+                pins2 = dict(pins, **{str(Path(d) / f): rt.sha(Path(d) / f) for d in src.values()
+                                      for f in ('final.pt', 'interface.npz', 'result.json', 'complete.json')})
+                c2 = dict(c, out=str(root2), background_source=src, input_sha256=pins2)
+                rt.write(root2 / 'config.json', c2)
+                s2 = core5.X5Session(c2, freeze_to=root2 / 'd.json')
+                for sid in c['background_shadows']:
+                    self.assertEqual(s2.reuse_background_shadow(sid, 't'), 'reused')
+                    with np.load(root / 'background' / f'shadow{sid}/interface.npz') as a, \
+                            np.load(root2 / 'background' / f'shadow{sid}/interface.npz') as b:
+                        np.testing.assert_array_equal(a['raw'], b['raw'])
+                    self.assertLessEqual(rt.read(root2 / 'background' / f'shadow{sid}/provenance.json')['interface_replay_max_abs'], 1e-10)
+                self.assertEqual(s2.reuse_background_shadow(0, 't'), 'skipped')
+                shutil.rmtree(root2 / 'background/shadow1')
+                original = (root / 'background/shadow1/final.pt').read_bytes()
+                (root / 'background/shadow1/final.pt').write_bytes(b'tampered')
+                with self.assertRaises(ValueError):
+                    s2.reuse_background_shadow(1, 't2')
+                (root / 'background/shadow1/final.pt').write_bytes(original)
                 # ---- a failing calibration gate stops smoke and leaves a visible record
                 real = core5.gate_decision
                 with patch.object(core5, 'gate_decision', side_effect=lambda r, p, t: real(r, p, 1e-9)):
-                    with self.assertRaisesRegex(ValueError, 'Calibration gate failed'):
+                    with self.assertRaisesRegex(ValueError, 'CE quality gate failed'):
                         s1.xsmoke(sm0)
                 failed = list(root.glob('smoke_gate_failed_*.json'))
                 self.assertEqual(len(failed), 1)
@@ -171,12 +196,20 @@ class GpuPathOnCpu(unittest.TestCase):
                 gate = rt.read(root / 'smoke/gate.json')
                 self.assertTrue(gate['passed'])
                 self.assertLess(gate['jvp_reverse_identity']['relative_error'], 1e-9)
-                self.assertIn('target', gate['p_true_profile'])
+                self.assertIn('target_stable', gate['p_true_profile'])
+                self.assertIn('shadow3_full_seed45', gate['p_true_profile'])
+                self.assertFalse(gate['v4_table_replay']['checked'])
+                self.assertLess(gate['legacy_precision_path_max_abs'], 1e-6)
                 with np.load(root / 'smoke/fixed_rows.npz') as z, np.load(root / 'background/target/interface.npz') as t:
                     np.testing.assert_array_equal(z['q_x'], t['raw'].astype(np.float32))   # stable target queries
                     np.testing.assert_array_equal(z['q_raw_index'], t['raw_index'])
-                base_rows = rt.read(root / 'smoke/attack_baselines.json')['rows']
-                self.assertTrue(all('ece' in r['metrics'] and 'confident_wrong_rate' in r['metrics'] for r in base_rows))
+                    old_target = pilot.load_model(full / 'checkpoints/target_fixed.pt', 1, 128, 4)
+                    np.testing.assert_array_equal(z['q_x_legacy'], np.asarray(pilot.get_predictions(old_target, ctx['X'][t['raw_index']]),
+                                                                              dtype=np.float32))
+                rows_all = rt.read(root / 'smoke/attack_baselines_all_targets.json')['rows']
+                self.assertEqual(len(rows_all), len(seeds) * 2 * 4)
+                self.assertTrue(all({'ece', 'prior_ce', 'cross_entropy_legacy', 'cross_entropy_legacy_fp64'} <= set(r['metrics'])
+                                    for r in rows_all))
                 s = core5.X5Session(c)
                 # ---- base, truth, score
                 for seed in seeds:
@@ -189,14 +222,22 @@ class GpuPathOnCpu(unittest.TestCase):
                     self.assertEqual(s.hybrid_cell(cell, 't'), 'done')
                 self.assertEqual(s.truth_cell(c['cells'][0], 't'), 'skipped')
                 self.assertEqual(s.hybrid_cell(c['cells'][0], 't'), 'skipped')
-                # hybrid: L1 split by row group adds up to the v4 L1; J00 identical to the truth cell
+                # hybrid: L1 split by row group adds up to the v4 L1; J00 identical to the truth cell; J for primary only
                 cell = c['cells'][3]
                 tr_rows = {(r['attack_seed'], r['cls']): r for r in rt.read(root / 'truth' / cell['name'] / 'result.json')['rows']}
                 for r in rt.read(root / 'hybrid' / cell['name'] / 'result.json')['rows']:
                     t = tr_rows[(r['attack_seed'], r['cls'])]
                     self.assertEqual(r['J00'], t['J00'])
+                    self.assertEqual('J' in r, r['cls'] in (1, 2))
+                    if 'J' in r:
+                        self.assertEqual(set(r['J']), {'deleted', 'retained', 'nonmember', 'deleted_nonmember'})
                     for g in ('1', '0.1'):
-                        self.assertAlmostEqual(r['L1_deleted'][g] + r['L1_retained'][g] + r['L1_nonmember'][g], t['L1'][g], places=10)
+                        self.assertAlmostEqual(sum(r['L1_by_group'][x][g] for x in ('deleted', 'retained', 'nonmember')),
+                                               t['L1'][g], places=10)
+                for r in tr_rows.values():
+                    self.assertTrue({'J_proj0', 'J_L2_logit', 'J00_legacy', 'J10_legacy', 'J_L2_retrain_legacy'} <= set(r))
+                tr0 = rt.read(root / 'truth' / cell['name'] / 'result.json')
+                self.assertGreaterEqual(tr0['jvp']['projection']['rows_modified'], tr0['jvp']['projection']['rows_negative'])
                 tr = rt.read(root / 'truth' / c['cells'][3]['name'] / 'result.json')
                 self.assertEqual(len(tr['rows']), 8)
                 self.assertTrue(all(abs(r['J00'] - tr['rows'][0]['J00']) >= 0 for r in tr['rows']))
@@ -210,6 +251,17 @@ class GpuPathOnCpu(unittest.TestCase):
                     self.assertEqual(s.xscore_seed(seed, 't'), 'done')
                 sr = rt.read(root / 'score/seed45/result.json')
                 self.assertTrue(all(g['qualified'] for g in sr['gammas']), sr['gammas'])
+                # ---- interpolation panel: t = 1 equals the truth cell's J10 - J00 (same attack init and order)
+                self.assertEqual(s.interp_panel('t'), 'done')
+                self.assertEqual(s.interp_panel('t'), 'skipped')
+                ip = rt.read(root / 'interp/result.json')
+                self.assertEqual(len(ip['rows']), 2 * 2 * 2 * 3)
+                t42 = {(r['attack_seed'], r['cls']): r for r in rt.read(root / 'truth/truth_s001_seed42/result.json')['rows']}
+                for r in ip['rows']:
+                    if r['t'] == 1. and r['subset'] == 1:
+                        tt = t42[(r['attack_seed'], r['cls'])]
+                        self.assertAlmostEqual(r['dJ'], tt['J10'] - tt['J00'], places=12)
+                        self.assertAlmostEqual(r['L1']['1'], tt['L1']['1'], places=12)
                 # ---- a tampered v3 subset model must be refused
                 bad = v3 / 'cells' / 'img32_s000_seed45' / 'final.pt'
                 st = torch.load(bad, weights_only=False)
@@ -230,13 +282,16 @@ class GpuPathOnCpu(unittest.TestCase):
             self.assertTrue((root / 'report/REPORT_CN.md').exists())
             rep = (root / 'report/REPORT_CN.md').read_text()
             self.assertIn('有限数值超过参考容差时继续运行', rep)
-            self.assertIn('v5：校准门', rep)
-            self.assertIn('v5：混合单元', rep)
-            self.assertIn('target：稳定配方（v5 唯一改动）', rep)
+            for sec in ('v5：CE 质量门', 'v5：混合单元', 'v5：Stage 2 接口插值', 'v5：L2-retrain 的投影对照',
+                        'v5：同一批 attack 在旧 target 上', '唯一新增的 CNN'):
+                self.assertIn(sec, rep)
             self.assertEqual(summary['hybrid']['status'], 'complete')
             self.assertLess(summary['hybrid']['l1_partition_max_abs_error'], 1e-10)
-            self.assertIsNotNone(summary['truth_shape']['shift_to_spread'])
-            self.assertTrue((root / 'report/table_hybrid.csv').exists())
+            self.assertIn('interaction_deleted_nonmember', summary['hybrid']['targets']['new'])
+            self.assertEqual(summary['interp']['status'], 'complete')
+            self.assertEqual(summary['paired_v4']['status'], 'no v4 run configured')
+            for t in ('hybrid', 'interp', 'ladder_extra', 'legacy_in_v5'):
+                self.assertTrue((root / f'report/table_{t}.csv').exists(), t)
             self.assertTrue((root / 'report/fig1_ladder.png').exists())
             tars = list(tmp.glob('exp.report.tar.gz'))
             self.assertEqual(len(tars), 1)

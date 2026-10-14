@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Cross-stage LDS ladder v5: v4 (cc0cad6) with a recipe-matched target.
+"""Cross-stage LDS ladder v5 (r1): v4 (cc0cad6) with one new CNN, a stable-recipe target.
 
-v4 used five stable-recipe shadows and the legacy target; the attack was confidently wrong on many
-target members (primary-class J00 0.95-1.50 at AUC 0.90) and the truth was a calibration shift.
-v5 retrains the target with the same stable recipe, adds a prespecified calibration gate in smoke
-(every primary-class J00 < ln 2) and hybrid diagnostic cells. Everything else is v4, reused
-byte-for-byte: 32 image subsets x 8 seeds of shadow 3 from v3, attack seeds, damping grids,
-primary classes 1 and 2, rungs L1 / L2-retrain / L2-lin / L3 / proxy.
+v4 used five stable-recipe shadows and the legacy target; the attack (AUC 0.90) had CE 0.95-1.50 on
+the primary classes. v5 trains only the target with the same stable recipe on its original split.
+Background shadows are reused from the v4 run (hash-checked, interface replayed), and every attack
+is evaluated on the stable target, the legacy target (v4 path, must reproduce v4) and the legacy
+checkpoint on the fp64 path, so old and new targets are paired. Smoke adds a CE quality gate
+(every primary-class J00 < ln 2). Truth cells add a projection-only control and a logit-linearized
+L2-retrain; hybrid cells measure deleted / retained / nonmember / deleted+nonmember rows; a small
+interpolation panel compares J(t) - J(0) with t * L1. Everything else is v4, reused byte-for-byte.
 
 Actions: prepare -> submit -> (status | resubmit | queue-report) -> collect.
 """
@@ -26,12 +28,15 @@ sys.dont_write_bytecode = True
 import runtime as rt
 import scheduler  # seed32 v2, unchanged
 
-SCHEMA = 'OCT_cross_stage_lds_v5'
+SCHEMA = 'OCT_cross_stage_lds_v5r1'
+V4_SCHEMA = 'OCT_cross_stage_lds_v4'
 V4_OUT = '/u/yli103/oct2-pathway2-runs/A/cross_stage_lds_v4_stable_20261013T044559507358835Z'
 V3_SCHEMA = 'OCT_image_lds_v3'
 V3_OUT = '/u/yli103/oct2-pathway2-runs/A/image_lds_v3_reviewed_20261010T033831362446826Z'
-TIMES = dict(background='01:00:00', smoke='02:30:00', base='01:00:00', pack='00:50:00', score='02:00:00', collect='00:30:00')
-CELL_MINUTES = 2.0   # measured in v4: truth cell median 55 s; two hybrid conditions add ~50 s
+TIMES = dict(background='01:00:00', smoke='02:30:00', base='01:00:00', pack='00:50:00', score='02:00:00', interp='01:00:00',
+             collect='00:30:00')
+CELL_MINUTES = 2.4   # v4 truth cell median 55 s (24 attack fits); r1 truth 36 fits + hybrid 24 fits ~ 130-140 s
+INTERP_TS = [1e-3, 1e-2, .1, .3, 1.]
 
 
 def floats(text):
@@ -97,6 +102,47 @@ def legacy_attack(c):
     return cfg, n_shadow
 
 
+def check_v4(c, v4):
+    """The v4 run supplies the background shadows (reused) and the paired old-target ladder."""
+    cfg = rt.read(v4 / 'config.json')
+    h = rt.sha(v4 / 'config.json')
+    if h != (v4 / 'config.sha256').read_text().strip():
+        raise ValueError('v4 config checksum changed')
+    same = ('full', 'data_dir', 'dataset_fingerprint', 'v3_out', 'v3_config_sha256', 'seeds', 'epochs', 'recipe', 'design',
+            'attack', 'attack_seeds', 'classes', 'primary_classes', 'attack_gammas', 'gammas', 'score_seeds',
+            'fixed_shadow_seed', 'background_shadows', 'batch', 'weight_decay')
+    diff = [k for k in same if cfg.get(k) != c.get(k)]
+    key = lambda cells: [(x['name'], x['subset'], x['seed']) for x in cells]
+    if key(cfg['cells']) != key(c['cells']):
+        diff.append('cells')
+    if cfg['schema'] != V4_SCHEMA or cfg['git_commit'] != rt.V4_COMMIT or cfg['background_recipe'] != 'stable' or diff:
+        raise ValueError(f'Need the completed v4 stable run at {rt.V4_COMMIT} with the same design; differs in {diff}')
+    report = rt.read(v4 / 'report/complete.json')
+    if report['status'] != 'complete' or report['config_sha256'] != h:
+        raise ValueError('v4 report is not complete')
+    pins = [v4 / x for x in ('config.json', 'config.sha256', 'report/complete.json', 'smoke/complete.json', 'smoke/fixed_rows.npz')]
+    rt.completed(v4 / 'smoke', h, dict(kind='xsmoke'))
+    source = {}
+    for sid in cfg['background_shadows']:
+        d = v4 / 'background' / f'shadow{sid}'
+        rt.completed(d, h, dict(kind='background', shadow=sid))
+        pins += [d / f for f in ('final.pt', 'interface.npz', 'result.json', 'complete.json')]
+        source[str(sid)] = str(d)
+    for s in cfg['seeds']:
+        rt.completed(v4 / 'base' / f'seed{s}', h, dict(kind='base', seed=s))
+    for cell in cfg['cells']:
+        d = v4 / 'truth' / cell['name']
+        rt.completed(d, h, cell)
+        pins.append(d / 'complete.json')
+    for s in cfg['score_seeds']:
+        d = v4 / 'score' / f'seed{s}'
+        rt.completed(d, h, dict(kind='xscore', seed=s))
+        pins.append(d / 'complete.json')
+    for p in pins:
+        c['input_sha256'][str(p)] = rt.sha(p)
+    return h, source
+
+
 def make_cells(c):
     cells = []
     for s in c['seeds']:  # seed-major: a pack touches one seed, so its J00 is computed once
@@ -156,7 +202,7 @@ def prepare(a):
              background_recipe='stable', fixed_shadow_seed=int(leg.get('fixed_shadow_seed', 42100)),
              background_shadows=[s for s in range(n_shadow) if s != 3],
              target_recipe='stable', target_seed=int(leg['target_seed']), j00_gate=a.j00_gate,
-             adjoint_identity_rel_tol=1e-9, v4_reference_out=a.v4_out, attack_gammas=gA, attack_solve_tol=1e-10, j00_tol=a.j00_tol,
+             adjoint_identity_rel_tol=1e-9, attack_gammas=gA, attack_solve_tol=1e-10, j00_tol=a.j00_tol,
              score_seeds=score_seeds, gammas=gammas, lanczos_max_steps=a.lanczos_max, lanczos_est_tol=1e-5,
              probe_steps=a.probe_steps, cg_fail_tol=1e-3, concurrency=a.concurrency, pack_minutes=a.pack_minutes,
              partition=a.partition, fp64_partition=a.fp64_partition, score_time=a.score_time,
@@ -164,15 +210,23 @@ def prepare(a):
              primary='Delta_value = J10 - J00 of the image-weighted attack CE over prespecified classes; raw Stage-1 endpoint',
              holdout_policy='Subsets, seeds, attack seeds, classes and primary Stage-1 damping are fixed here; '
                             'gamma_A* is determined from full-baseline Hessians only. Attack quality does not filter classes.',
-             gate_policy='Smoke stops the run unless every primary-class J00 on every full baseline is below j00_gate '
-                         '(ln 2 by default). Decided on full baselines only, before any subset outcome.')
+             gate_policy='CE quality gate (not a calibration test): smoke stops the run unless every primary-class J00 on '
+                         'every full baseline is below j00_gate (ln 2 by default). Full baselines only, before any subset outcome.',
+             pairing='Every attack is also evaluated on the legacy target (v4 path); after an exact replay check against the '
+                     'v4 cells, LDS differences new - old target are bootstrapped over the same subsets.')
     if not 0 < a.j00_gate <= 1:
         raise ValueError('j00_gate must be in (0, 1]')
-    c['background_jobs'] = [*c['background_shadows'], 'target']
     c['cells'] = make_cells(c)
+    v4 = Path(a.v4_out).resolve()
+    rt.disjoint(c['out'], v4)
+    c['v4_config_sha256'], c['background_source'] = check_v4(c, v4)
+    c['v4_out'] = str(v4)
+    c['background_jobs'] = [*c['background_shadows'], 'target']
+    c['interp'] = dict(subsets=[0, 1, 2, 3], seeds=c['seeds'][:2], ts=INTERP_TS,
+                       rule='fixed before any subset outcome: first four subset ids, first two seeds, all attack seeds, primary classes')
     c['packs'] = make_packs(c['cells'], a.pack_minutes)
     rt.save_config(c)
-    print(f"background jobs={c['background_jobs']}; J00 gate={c['j00_gate']:.4f}; "
+    print(f"background jobs={c['background_jobs']} (shadows reused from v4); CE gate={c['j00_gate']:.4f}; "
           f"truth+hybrid cells={len(c['cells'])} in {len(c['packs'])} packs (~{len(c['cells']) * CELL_MINUTES / 60:.1f} GPU-h); "
           f"base tasks={len(c['seeds'])}; score tasks={len(score_seeds)}; attack seeds={c['attack_seeds']}; "
           f"partition={a.partition}, score partition={a.fp64_partition}")
@@ -251,8 +305,9 @@ def submit(a):
                                                    *after(jobs['base'])], c['partition'])
         jobs['score'] = launch('score', ['--time=' + walltime(c, 'score', a), array(list(range(len(c['score_seeds']))), c['concurrency']),
                                          *after(jobs['base'])], partition(c, 'score', a))
+        jobs['interp'] = launch('interp', ['--time=' + TIMES['interp'], *after(jobs['base'])], c['partition'])
         jobs['collect'] = launch('collect', ['--time=' + TIMES['collect'],
-                                *after(jobs['pack:truth'] + ':' + jobs['score'])], c['cpu_partition'])
+                                *after(jobs['pack:truth'] + ':' + jobs['score'] + ':' + jobs['interp'])], c['cpu_partition'])
     (out / 'jobs.json').write_text(json.dumps(jobs, indent=2) + '\n')
     print('\n'.join(f'{k}={v}' for k, v in jobs.items()))
 
@@ -279,7 +334,8 @@ def incomplete(c):
     return {'background': [i for i, job in enumerate(c['background_jobs']) if not background_done(job)],
             'base': [i for i, s in enumerate(c['seeds']) if not done(out / 'base' / f'seed{s}', dict(kind='base', seed=s))],
             'pack:truth': [i for i, p in enumerate(c['packs']) if not pack_done(p)],
-            'score': [i for i, s in enumerate(c['score_seeds']) if not done(out / 'score' / f'seed{s}', dict(kind='xscore', seed=s))]}
+            'score': [i for i, s in enumerate(c['score_seeds']) if not done(out / 'score' / f'seed{s}', dict(kind='xscore', seed=s))],
+            'interp': [] if done(out / 'interp', dict(kind='interp')) else [0]}
 
 
 def status(a):
@@ -292,12 +348,13 @@ def status(a):
         fr = rt.read(out / 'smoke/frozen.json')
         print('primary classes:', fr['qualified_classes'], 'omega:', fr['omega'], 'gamma_A*:', fr['attack_gamma_star'])
         g = rt.read(out / 'smoke/gate.json')
-        print('calibration gate:', 'PASSED' if g['passed'] else 'FAILED', {k: round(v['J00_max'], 4) for k, v in g['per_class'].items()},
-              'threshold', round(g['threshold'], 4), '| JVP identity rel', g['jvp_reverse_identity']['relative_error'])
+        print('CE quality gate:', 'PASSED' if g['passed'] else 'FAILED', {k: round(v['J00_max'], 4) for k, v in g['per_class'].items()},
+              'threshold', round(g['threshold'], 4), '| JVP identity rel', g['jvp_reverse_identity']['relative_error'],
+              '| v4 table replay', g['v4_table_replay'].get('passed'))
     for p in sorted(out.glob('smoke_gate_failed_*.json')):
         g = rt.read(p)
         print('FAILED GATE', p.name, {k: round(v['J00_max'], 4) for k, v in g['per_class'].items()})
-    sizes = dict(background=len(c['background_jobs']), base=len(c['seeds']), score=len(c['score_seeds']))
+    sizes = dict(background=len(c['background_jobs']), base=len(c['seeds']), score=len(c['score_seeds']), interp=1)
     sizes['pack:truth'] = len(c['packs'])
     for k, v in incomplete(c).items():
         print(f'{k}: {sizes[k] - len(v)}/{sizes[k]} complete; incomplete indices {v[:20]}{" ..." if len(v) > 20 else ""}')
@@ -313,7 +370,7 @@ def resubmit(a):
     c = config(a.out)
     out = Path(c['out'])
     previous = scheduler.receipts(out)
-    modes = ['background', 'smoke', 'base', 'pack:truth', 'score']
+    modes = ['background', 'smoke', 'base', 'pack:truth', 'score', 'interp']
     selected = a.only.split(',') if a.only else None
     if selected and any(m not in modes for m in selected):
         raise ValueError('Unknown --only mode')
@@ -342,18 +399,19 @@ def resubmit(a):
         return
     rt.completed(out / 'smoke', rt.sha(out / 'config.json'), dict(kind='xsmoke'))
     todo = incomplete(c)
-    selected = selected or [m for m in ('base', 'pack:truth', 'score') if todo[m]]
+    selected = selected or [m for m in ('base', 'pack:truth', 'score', 'interp') if todo[m]]
     scheduler.require_terminal([r for r in previous if r['mode'] in selected])
-    if any(m in selected for m in ('pack:truth', 'score')) and todo['base'] and 'base' not in selected:
+    if any(m in selected for m in ('pack:truth', 'score', 'interp')) and todo['base'] and 'base' not in selected:
         raise ValueError('Base tasks incomplete; resubmit base first (truth and score read base outputs)')
     with (out / 'submission.jsonl').open('a') as ledger:
         launch = launcher(c, ledger)
         base_job = None
-        for mode in ('base', 'pack:truth', 'score'):
+        for mode in ('base', 'pack:truth', 'score', 'interp'):
             if mode not in selected or not todo[mode]:
                 continue
             deps = ['--dependency=afterok:' + base_job, '--kill-on-invalid-dep=yes'] if base_job and mode != 'base' else []
-            job = launch(mode, ['--time=' + walltime(c, mode, a), array(todo[mode], c['concurrency']), *deps],
+            arr = [] if mode == 'interp' else [array(todo[mode], c['concurrency'])]
+            job = launch(mode, ['--time=' + walltime(c, mode, a), *arr, *deps],
                          partition(c, mode, a), mode.replace(':', '_') + '_re')
             if mode == 'base':
                 base_job = job
@@ -412,6 +470,8 @@ def gpu(a):
             job = c['background_jobs'][a.index]
             if job == 'target':
                 print('background target', session.background_target(tag), flush=True)
+            elif str(job) in (c.get('background_source') or {}):
+                print(f'background shadow{job}', session.reuse_background_shadow(job, tag), flush=True)
             else:
                 print(f'background shadow{job}', session.background_shadow(job, tag), flush=True)
         finally:
@@ -450,6 +510,8 @@ def gpu(a):
     elif mode == 'score':
         s = c['score_seeds'][a.index]
         print(f'score seed{s}', session.xscore_seed(s, tag), flush=True)
+    elif mode == 'interp':
+        print('interp', session.interp_panel(tag), flush=True)
     else:
         raise ValueError('Unknown GPU mode')
     config(a.out)
@@ -523,7 +585,7 @@ def main():
     q.add_argument('--v3-out', default=V3_OUT)
     q.add_argument('--k-attack', type=int, default=3, help='attack seeds taken from the legacy crossed panel')
     q.add_argument('--j00-gate', type=float, default=math.log(2.), help='smoke gate on every primary-class J00')
-    q.add_argument('--v4-out', default=V4_OUT, help='recorded for the report only; nothing is read from it')
+    q.add_argument('--v4-out', default=V4_OUT, help='completed v4 run: background shadows reused, old-target ladder paired')
     q.add_argument('--primary-classes', default='1,2', help='fixed primary classes; all four classes are also reported')
     q.add_argument('--primary-gamma', type=float, default=.03)
     q.add_argument('--attack-seeds', default='', help='override the legacy panel, comma list')
@@ -549,7 +611,7 @@ def main():
         if name == 'collect':
             q.add_argument('--allow-partial', action='store_true')
         if name == 'resubmit':
-            q.add_argument('--only', default=None, help='comma list of base,pack:truth,score (or background/smoke)')
+            q.add_argument('--only', default=None, help='comma list of base,pack:truth,score,interp (or background/smoke)')
         if name in ('submit', 'resubmit'):
             q.add_argument('--score-time', default=None, help='override score walltime')
             q.add_argument('--fp64-partition', default=None, help='override the score partition')
