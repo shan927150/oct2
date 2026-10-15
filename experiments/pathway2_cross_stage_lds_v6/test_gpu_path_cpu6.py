@@ -187,11 +187,21 @@ class GpuPathOnCpu(unittest.TestCase):
                 self.assertEqual(fr['attack_seeds'], [5101, 5102, 5103])
                 self.assertEqual(fr['attack_gamma_star'], rt.read(root / 'smoke/frozen.json')['attack_gamma_star'])
                 s = core6.X6Session(c6)
+                real_condition = s.condition
+                def drifted(*args, **kwargs):
+                    out, model = real_condition(*args, **kwargs)
+                    out['metrics']['cross_entropy'] += 1.
+                    return out, model
+                with patch.object(s, 'condition', side_effect=drifted):
+                    with self.assertRaisesRegex(ValueError, 'J00 vs smoke'):
+                        s.base6(seeds[0], 'drift')
+                self.assertFalse((root6 / 'base' / f'seed{seeds[0]}/complete.json').exists())
                 for seed in seeds:
                     self.assertEqual(s.base6(seed, 't'), 'done')
                     self.assertEqual(s.base6(seed, 't'), 'skipped')
                 b = rt.read(root6 / 'base/seed45/result.json')
                 self.assertLess(b['h_replay_max_abs'], 1e-10)
+                self.assertTrue(all(r['J00_minus_smoke'] == 0. for r in b['rows']))
                 with np.load(root6 / 'base/seed45/h.npz') as z, np.load(root / 'base/seed45/h.npz') as z5:
                     self.assertEqual(z['h'].shape[:2], (3, 4))
                     np.testing.assert_array_equal(z['h'][:2], z5['h'])
@@ -234,6 +244,8 @@ class GpuPathOnCpu(unittest.TestCase):
                          'L3 member (gamma=0.3)', 'proxy (full)', 'proxy (member)'):
                 self.assertIn(name, summ['ladder'])
             self.assertEqual(summ['replay']['j10_replay'], 0.)
+            self.assertEqual(summ['replay']['new_j00_vs_smoke'], 0.)
+            self.assertIn('frozen_v5_on_new_attack_seeds', summ)
             # the old-seed truth must equal the v5 r1 truth
             ar = __import__('analysis6').arrays(__import__('analysis6').load(root6, c6), c6)
             self.assertEqual(ar['D'].shape[2], 3)

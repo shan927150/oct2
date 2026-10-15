@@ -5,9 +5,10 @@ A. Attack seeds 3 -> 6. The v5 r1 run supplies everything for attack seeds 5101-
    computes their J00, J10, V and h. Old and new seeds are commensurable only if the attack replays
    exactly, which smoke and every truth cell check against v5 r1.
 B. Member-only h. h_member = sum over shadow-3 member (training) rows of (dp_r/dtheta)^T v_r, i.e.
-   v with the nonmember rows set to zero. It needs no knowledge of the deleted subset, so L3_member
-   = -sum_{i not in S_j} tau_i with tau_i = -hbar_member^T (H + gamma I)^{-1} g_i is a deployable
-   score. It drops a real pathway (deletion also moves heldout predictions), so it is an alternative
+   v with the nonmember rows set to zero. It needs no knowledge of the deleted subset to construct
+   tau_i = -hbar_member^T (H + gamma I)^{-1} g_i. L3_member uses the matched subset normalization
+   sum_i ((N / K_j) M_ji - 1) tau_i; with fixed K_j its rank equals the negative deleted-score sum.
+   It drops a real pathway (deletion also moves heldout predictions), so it is an alternative
    estimator, not the exact formula; the v5 r1 L1 decomposition suggested it (post hoc).
 
 Everything else is v5 r1: stable-target table (copied, hash-checked), primary classes, omega,
@@ -94,10 +95,11 @@ class X6Session(X5Session):
         gate['gamma_star_qualified_on_new_seeds'] = all(r['qualified_gamma'][gstar] for r in rows if r['cls'] in primary)
         gate['old_attack_replay_max_abs'] = rep
         rt.write(dest / 'gate.json', _clean(gate))
+        if not gate['passed'] or not gate['gamma_star_qualified_on_new_seeds']:
+            rt.write(self.root / f'smoke_gate_failed_{dest.name.lstrip(".")}.json', _clean(gate))
         if not gate['gamma_star_qualified_on_new_seeds']:
             raise ValueError(f'Inherited gamma_A*={gstar} does not qualify for every new primary attack; stop and discuss')
         if not gate['passed']:
-            rt.write(self.root / f'smoke_gate_failed_{dest.name.lstrip(".")}.json', _clean(gate))
             raise ValueError('CE quality gate failed on the new attack seeds; stop and discuss. '
                              + str({k: v['J00_max'] for k, v in gate['per_class'].items()}))
         frozen = dict(fr5, attack_seeds=self.old_k + self.new_k, old_attack_seeds=self.old_k, new_attack_seeds=self.new_k,
@@ -121,16 +123,21 @@ class X6Session(X5Session):
             return 'skipped'
         start = time.monotonic()
         c, fr, fixed = self.c, self.frozen(), self.fixed()
+        smoke = {(r['seed'], r['attack_seed'], r['cls']): r for r in
+                 rt.read(self.root / 'smoke/attack_baselines_new_seeds.json')['rows']}
         gA, gstar = c['attack_gammas'], fr['attack_gamma_star']
         gi = gA.index(gstar)
         member = self.member_rows(fixed)
         d5 = self.v5_dir(f'base/seed{seed}', dict(kind='base', seed=seed))
         with np.load(d5 / 'v.npz') as z:
             V_old = z['v']
-            if list(z['attack_seeds']) != self.old_k or list(z['attack_gammas']) != gA:
-                raise ValueError('v5 r1 base arrays have a different attack-seed / gamma layout')
+            if (list(z['attack_seeds']) != self.old_k or list(z['attack_gammas']) != gA
+                    or list(z['classes']) != c['classes']):
+                raise ValueError('v5 r1 base arrays have a different attack-seed / class / gamma layout')
         with np.load(d5 / 'h.npz') as z:
             H_old = z['h']
+            if float(z['gamma_star']) != gstar:
+                raise ValueError('v5 r1 h was computed at a different gamma_A*')
         model = self.model(self.full_name(seed), seed)
         p3 = self.v3_probs(self.full_name(seed))
         nK, nC = len(self.old_k) + len(self.new_k), len(c['classes'])
@@ -143,9 +150,16 @@ class X6Session(X5Session):
         for ki, k in enumerate(self.new_k, start=len(self.old_k)):
             for ci, cls in enumerate(c['classes']):
                 out, _ = self.condition(fixed, p3, k, cls, adjoint_gammas=gA)
+                diff = require_replay_close(f'J00 vs smoke, seed {seed} attack {k} class {cls}',
+                                            out['metrics']['cross_entropy'],
+                                            smoke[(seed, k, cls)]['metrics']['cross_entropy'], c['j00_tol'])
+                if cls in fr['qualified_classes'] and not A.qualified_gamma(
+                        out['adjoint']['per_gamma'], c['attack_solve_tol'])[gstar]:
+                    raise ValueError(f'Base gamma_A* unqualified: seed {seed} attack {k} class {cls}')
                 for gj, g in enumerate(gA):
                     V[ki, ci, gj] = out['v'][g]
-                rows.append(dict(attack_seed=k, cls=cls, metrics=out['metrics'], adjoint=out['adjoint']))
+                rows.append(dict(attack_seed=k, cls=cls, metrics=out['metrics'], J00_minus_smoke=diff,
+                                 adjoint=out['adjoint']))
             hk = self.h_vectors(model, fixed, {cls: V[ki, ci, gi] for ci, cls in enumerate(c['classes'])})
             H[ki] = torch.stack([hk[cls] for cls in c['classes']]).cpu().numpy()
         replay = None
@@ -241,9 +255,13 @@ class X6Session(X5Session):
                 r['L1_member'] = {f'{g:g}': float((V[ki, ci, gi][sel & member] * dP[sel & member]).sum()) for gi, g in enumerate(gA)}
                 r['L2_lin_member'] = float(Hm[ki, ci] @ dth)
                 if k in self.old_k:   # the copied v5 r1 L1 / L2-lin must equal what v6's arrays give
-                    r['L1_check_abs'] = abs(float((V[ki, ci, gA.index(fr['attack_gamma_star'])][sel] * dP[sel]).sum())
-                                            - o['L1'][f"{fr['attack_gamma_star']:g}"])
-                    r['L2_lin_check_abs'] = abs(float(H[ki, ci] @ dth) - o['L2_lin'])
+                    r['L1_check_abs'] = max(require_replay_close(
+                        f'L1 replay {cell["name"]} attack {k} class {cls} gamma {g:g}',
+                        float((V[ki, ci, gj][sel] * dP[sel]).sum()), o['L1'][f'{g:g}'],
+                        1e-10 * max(1., abs(o['L1'][f'{g:g}']))) for gj, g in enumerate(gA))
+                    r['L2_lin_check_abs'] = require_replay_close(
+                        f'L2-lin replay {cell["name"]} attack {k} class {cls}',
+                        float(H[ki, ci] @ dth), o['L2_lin'], 1e-10 * max(1., abs(o['L2_lin'])))
                 rows.append(r)
         rt.write(tmp / 'result.json', _clean(dict(cell=tcell, rows=rows, j10_replay_abs=replay)))
         rt.finish(tmp, c, tcell, elapsed_seconds=time.monotonic() - start)

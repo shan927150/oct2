@@ -111,6 +111,8 @@ def paired(p1, p2, truth, draws=2000, seed=20261015):
         if x is not None and y is not None:
             vals.append(x - y)
     vals = np.asarray(vals)
+    if not len(vals):
+        return None
     return dict(lds_a=float(a), lds_b=float(b), difference=float(a - b), ci=np.quantile(vals, [.025, .975]).tolist(),
                 fraction_not_better=float((vals <= 0).mean()), draws=len(vals))
 
@@ -126,6 +128,12 @@ def analyze(data, c):
                    frozen=fr, gate=data['gate'], missing=data['missing'], critical_spearman=S.critical_spearman(m),
                    critical_spearman_alpha_0_025=S.critical_spearman(m, alpha=ALPHA), replay=ar['checks'],
                    truths={}, ladder={}, primary={}, secondary={}, attack_seed_reliability={})
+    summary['inference_scope'] = (
+        'Exploratory comparisons on the v5 subsets, Stage-1 seeds and target. The two-test correction '
+        'does not adjust for choosing the member estimator after inspecting v5 results. CIs are '
+        'conditional on this seed panel. Six-seed scores evaluated on T_new still use new-seed adjoints.')
+    summary['replay']['new_j00_vs_smoke'] = max(
+        (r.get('J00_minus_smoke', 0.) for b in data['base'].values() for r in b['rows']), default=None)
     tables = dict(ladder=[], primary=[], secondary=[], attack_pairs=[])
     if not ar['seeds']:
         return summary, tables
@@ -185,15 +193,17 @@ def analyze(data, c):
             continue
         p = b.get('permutation_p_one_sided')
         e = dict(rung=name, lds=b['spearman'], ci=b.get('bootstrap_ci_conditional_on_seed_panel'), perm_p_one_sided=p,
-                 alpha=ALPHA, passed=bool(p is not None and p < ALPHA))
+                 alpha=ALPHA, passed=None if data['missing'] else bool(p is not None and p < ALPHA),
+                 interpretation='nominal threshold only; exploratory, not independent confirmation')
         summary['primary'][key] = e
         tables['primary'].append(dict(test=key, rung=name, lds=e['lds'], perm_p=p, passed=e['passed']))
     a, b = f'L3 member (gamma={g0:g})', f'L3 full (gamma={g0:g})'
     if a in pred_all and b in pred_all:
         d = paired(pred_all[a], pred_all[b], T['all'])
-        summary['primary']['P3'] = dict(rung=f'{a} - {b}', **d)
-        tables['primary'].append(dict(test='P3', rung=f'{a} - {b}', lds=d['difference'], perm_p=None, passed=None,
-                                      ci_low=d['ci'][0], ci_high=d['ci'][1]))
+        if d is not None:
+            summary['primary']['P3'] = dict(rung=f'{a} - {b}', **d)
+            tables['primary'].append(dict(test='P3', rung=f'{a} - {b}', lds=d['difference'], perm_p=None, passed=None,
+                                          ci_low=d['ci'][0], ci_high=d['ci'][1]))
     # ---------------------------------------------------------------- secondary
     sec = {}
     for x, y in (('L1 (member)', 'L1 (full)'), ('L2-lin (member)', 'L2-lin (full)'),
@@ -201,12 +211,18 @@ def analyze(data, c):
         if x in pred_all and y in pred_all:
             sec[f'{x} - {y}'] = paired(pred_all[x], pred_all[y], T['all'])
     v5 = data.get('v5_scores') or {}
-    if b in pred_all and v5 and all(s in v5 for s in c['score_seeds']):
+    if v5 and all(s in v5 for s in c['score_seeds']):
         key = f'pred_gamma{g0:g}'
         if all(key in v5[s] for s in c['score_seeds']):
             p_v5 = np.mean([v5[s][key] for s in c['score_seeds']], 0)
-            sec['L3 full: 6-seed hbar - v5 r1 3-seed hbar (on T_all)'] = paired(pred_all[b], p_v5, T['all'])
+            if b in pred_all:
+                sec['L3 full: 6-seed hbar - v5 r1 3-seed hbar (on T_all)'] = paired(pred_all[b], p_v5, T['all'])
             sec['v5 r1 L3 (3-seed hbar) on T_old'] = dict(lds_a=spearman(p_v5, T['old']))
+            control = S.lds_block(p_v5, T['new'], nimg)
+            summary['frozen_v5_on_new_attack_seeds'] = dict(
+                predictor='v5 r1 L3 full, frozen old-seed hbar', truth='T_new', gamma=g0, **control,
+                note='New attack seeds are excluded from this predictor; same subsets, Stage-1 seeds and target. '
+                     'This checks sensitivity to attack randomness, not generalization to new subsets or targets.')
     for name, d in sec.items():
         if d and 'difference' in d:
             tables['secondary'].append(dict(comparison=name, lds_a=d['lds_a'], lds_b=d['lds_b'], difference=d['difference'],

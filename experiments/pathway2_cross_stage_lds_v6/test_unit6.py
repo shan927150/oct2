@@ -89,6 +89,26 @@ class PrepareTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.run_prepare([5101, 5102, 5103], new='5104,5105')          # wrong count
 
+    def test_mismatched_inputs_are_rejected_before_copying_v5_config(self):
+        _, tmp, v5, run, base = self.run_prepare([5101, 5102, 5103])
+        for key in ('full', 'data_dir', 'dataset_fingerprint'):
+            def mismatch(a, schema):
+                c = base(a, schema)
+                c[key] = 'different-input'
+                return c
+            with self.subTest(key=key), patch.object(rt, 'prepare_base', side_effect=mismatch):
+                with self.assertRaisesRegex(ValueError, key + ' differs'):
+                    run.prepare(self.args(tmp / ('bad_' + key), v5))
+            self.assertFalse((tmp / ('bad_' + key)).exists())
+
+    def test_positive_new_seed_count_required(self):
+        run = own_run('run_empty_seeds')
+        a = self.args('/unused/out', '/unused/v5')
+        a.n_new = 0
+        with patch.object(rt, 'prepare_base') as prepare, self.assertRaisesRegex(ValueError, 'must be positive'):
+            run.prepare(a)
+        prepare.assert_not_called()
+
     def test_check_repo_requires_v4_and_v5_unchanged(self):
         ok = 'A\texperiments/pathway2_cross_stage_lds_v6/core6.py'
         for row, v5diff, good in ((ok, '', True), ('A\texperiments/pathway2_cross_stage_lds_v5/core5.py', '', True),
@@ -179,6 +199,30 @@ class AnalysisTests(unittest.TestCase):
         s, _ = analysis6.analyze(data, c)
         self.assertIn('unqualified', s['primary']['P2']['status'])
         self.assertNotIn('P3', s['primary'])
+
+    def test_frozen_old_score_on_new_truth_uses_no_new_score(self):
+        data, c = self.synthetic(True)
+        frozen = np.arange(len(data['M']), dtype=float)
+        data['v5_scores'] = {s: {'pred_gamma0.03': frozen.copy()} for s in c['score_seeds']}
+        # The holdout control must survive even if the new six-seed full solve fails.
+        for sc in data['scores'].values():
+            sc['result']['variants']['full']['gammas'][1].update(qualified=False, reasons=['residual'])
+        s, _ = analysis6.analyze(data, c)
+        ar = analysis6.arrays(data, c)
+        D = analysis6.A4.weighted(ar['D'], data['frozen']['omega'], c['classes'])
+        new_truth = D[:, :, 2:].mean((1, 2))
+        self.assertAlmostEqual(s['frozen_v5_on_new_attack_seeds']['spearman'], analysis6.spearman(frozen, new_truth))
+        self.assertIn('unqualified', s['primary']['P1']['status'])
+
+    def test_constant_pair_has_no_claim(self):
+        self.assertIsNone(analysis6.paired(np.ones(32), np.arange(32), np.arange(32)))
+
+    def test_partial_results_do_not_pass_primary_thresholds(self):
+        data, c = self.synthetic(True)
+        data['missing'] = ['base/seed42']
+        s, _ = analysis6.analyze(data, c)
+        self.assertIsNone(s['primary']['P1']['passed'])
+        self.assertIsNone(s['primary']['P2']['passed'])
 
 
 if __name__ == '__main__':

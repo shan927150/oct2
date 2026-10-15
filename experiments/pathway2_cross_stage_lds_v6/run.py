@@ -84,15 +84,17 @@ def make_packs(cells):
 def prepare(a):
     if not 1 <= a.concurrency <= 32:
         raise ValueError('Invalid concurrency')
+    if a.n_new < 1:
+        raise ValueError('--n-new must be positive')
     c = rt.prepare_base(a, SCHEMA)
     v5 = Path(a.v5_out).resolve()
     rt.disjoint(c['out'], v5)
     cfg, h5, pins = check_v5(v5)
-    for k in COPY:
-        c[k] = cfg[k]
     for key in ('full', 'data_dir', 'dataset_fingerprint'):
         if c[key] != cfg[key]:
             raise ValueError(f'{key} differs from the v5 r1 run')
+    for k in COPY:
+        c[k] = cfg[k]
     c['input_sha256'].update(cfg['input_sha256'])
     c['input_sha256'].update(pins)
     rt.verify_hashes(c['input_sha256'])
@@ -126,8 +128,10 @@ def prepare(a):
                  status='P2 was suggested by the v5 r1 L1 decomposition on the same 32 subsets and 8 Stage-1 seeds; it is '
                         'prespecified before any L3_member is computed, but not independent of those subsets. Confirmation '
                         'needs fresh subsets.'),
-             secondary='Same rungs on the new-seed-only truth (held-out attack randomness) and on the old-seed truth; '
-                       'L1 / L2-lin full vs member; attack-seed reliability; LDS(L3_full, 6-seed hbar) vs v5 r1 L3 (3-seed hbar).')
+             secondary='Same rungs on new-seed-only and old-seed truth (the 6-seed hbar includes both panels, so these '
+                       'are not held-out evaluations); frozen v5 r1 L3 on new-seed-only truth is the attack-seed holdout '
+                       'control, conditional on the same subsets, Stage-1 seeds and target. L1 / L2-lin full vs member; '
+                       'attack-seed reliability; LDS(L3_full, 6-seed hbar) vs v5 r1 L3 (3-seed hbar).')
     c['packs'] = make_packs(c['cells'])
     rt.save_config(c)
     print(f"v5 r1 run {v5}; attack seeds {old} + new {new} ({source}); truth cells={len(c['cells'])} in {len(c['packs'])} packs; "
