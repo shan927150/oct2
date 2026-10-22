@@ -9,8 +9,8 @@ export PYTHONDONTWRITEBYTECODE=1
 runs=/u/yli103/oct2-pathway2-runs/A
 v6="${1:-$(cat "$runs/cross_stage_lds_v6_current.txt")}"
 shift || true
-out="$runs/interface_lds_v1_$(date -u +%Y%m%dT%H%M%S%NZ)"
+out="$runs/interface_lds_v1r1_$(date -u +%Y%m%dT%H%M%S%NZ)"
 python3 "$pkg/run.py" prepare --out "$out" --v6-out "$v6" "$@"
-printf '%s\n' "$out" > "$runs/interface_lds_v1_current.txt"
+printf '%s\n' "$out" > "$runs/interface_lds_v1r1_current.txt"
 python3 "$pkg/run.py" submit --out "$out"
 printf 'OUT=%s\n' "$out"

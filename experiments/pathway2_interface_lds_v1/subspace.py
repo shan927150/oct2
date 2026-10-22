@@ -15,6 +15,7 @@ end of a seed bounds every solve made on a smaller basis.
 
 Works on any torch device and dtype; the small projected systems are solved in float64 on the same device.
 """
+import math
 import torch
 
 
@@ -23,6 +24,7 @@ class SharedGalerkin:
         if max_dim < 1 or dim < 1:
             raise ValueError('Invalid subspace dimensions')
         self.matvec = matvec
+        max_dim = min(max_dim, dim)
         self.Q = torch.zeros((max_dim, dim), dtype=dtype, device=device)
         self.HQ = torch.zeros((max_dim, dim), dtype=dtype, device=device)
         self.A = torch.zeros((max_dim, max_dim), dtype=torch.float64, device=device)   # Q H Q^T
@@ -66,11 +68,20 @@ class SharedGalerkin:
         Gm = .5 * (self.G[:m, :m] + self.G[:m, :m].T)
         c = (self.Q[:m] @ b).to(torch.float64)
         out = {}
+        self.projection_failures = []
         for g in gammas:
-            y = torch.linalg.solve(A + g * Gm, c)
+            try:
+                y = torch.linalg.solve(A + g * Gm, c)
+            except torch.linalg.LinAlgError:
+                self.projection_failures.append(g)
+                out[g] = (torch.zeros_like(b), b.clone())
+                continue
             yd = y.to(self.Q.dtype)
             x = yd @ self.Q[:m]
             r = b - yd @ self.HQ[:m] - g * x
+            if not torch.isfinite(x).all() or not torch.isfinite(r).all():
+                self.projection_failures.append(g)
+                x, r = torch.zeros_like(b), b.clone()
             out[g] = (x, r)
         return out
 
@@ -89,11 +100,18 @@ class SharedGalerkin:
     def solve(self, b, gammas, tols, max_new):
         """x[gamma] with exact Galerkin residuals; expands the shared basis as needed (at most max_new)."""
         gammas = [float(g) for g in gammas]
-        if any(not g > 0 for g in gammas) or len(tols) != len(gammas):
-            raise ValueError('gammas must be positive with one tolerance each')
+        if (not gammas or len(set(gammas)) != len(gammas)
+                or any(not math.isfinite(g) or g <= 0 for g in gammas)
+                or len(tols) != len(gammas) or any(not math.isfinite(t) or t <= 0 for t in tols)
+                or max_new < 1):
+            raise ValueError('Distinct finite positive gammas and tolerances, and max_new >= 1, are required')
+        if b.shape != (self.Q.shape[1],) or not torch.isfinite(b).all():
+            raise ValueError('Right-hand side must be finite with the expected dimension')
         bn = float(b.norm())
-        if not bn > 0 or not torch.isfinite(b).all():
-            raise ValueError('Right-hand side must be finite and non-zero')
+        if bn == 0:
+            return dict(x={g: torch.zeros_like(b) for g in gammas}, rel_residual={g: 0. for g in gammas},
+                        converged=True, new_vectors=0, dim=self.m, stalled=False, capped=False,
+                        projection_failures=[])
         start, stalled, capped = self.matvecs, False, False
         if self.m == 0:
             self._append(b.clone())
@@ -107,8 +125,11 @@ class SharedGalerkin:
             if self.matvecs - start >= max_new or self.m >= self.Q.shape[0]:
                 capped = True
                 break
-            if not self._append(sol[worst][1].clone()):
+            # A singular auxiliary shift must not prevent other shifts from expanding their basis.
+            candidates = sorted((g for g in gammas if ratio[g] > 1), key=ratio.get, reverse=True)
+            if not any(self._append(sol[g][1].clone()) for g in candidates):
                 stalled = True
                 break
         return dict(x={g: sol[g][0] for g in gammas}, rel_residual=rel, converged=all(v <= 1 for v in ratio.values()),
-                    new_vectors=self.matvecs - start, dim=self.m, stalled=stalled, capped=capped)
+                    new_vectors=self.matvecs - start, dim=self.m, stalled=stalled, capped=capped,
+                    projection_failures=list(self.projection_failures))

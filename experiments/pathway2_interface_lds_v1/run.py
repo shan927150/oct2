@@ -9,7 +9,7 @@ gradient sums on one shared Galerkin subspace and stores the logit JVPs of every
 
 Prespecified primary: mean over outputs (nonmember row r, class c) of the Spearman correlation across the
 32 subsets between the IF prediction J_p dtheta_hat (gamma = 0.03, mean over the score panel) and the
-retrained change (mean over 8 seeds); one-sided joint-permutation p, subset-bootstrap CI.
+retrained change (mean over the same seed panel); one-sided joint-permutation p, subset-bootstrap CI.
 
 Actions: prepare -> submit -> (status | resubmit) -> collect.
 """
@@ -28,7 +28,7 @@ sys.dont_write_bytecode = True
 import runtime as rt
 import scheduler  # seed32 v2, unchanged
 
-SCHEMA = 'OCT_interface_lds_v1'
+SCHEMA = 'OCT_interface_lds_v1r1'
 V6_SCHEMA = 'OCT_cross_stage_lds_v6'
 TIMES = dict(smoke='03:00:00', collect='01:00:00')
 COPY = ('v3_out', 'v3_config_sha256', 'v3_cells', 'seed32_out', 'baseline_out', 'lds_pilot_out', 'seeds', 'epochs',
@@ -72,7 +72,9 @@ def check_v6(v6):
 def prepare(a):
     if not 1 <= a.concurrency <= 32 or a.max_dim < 50 or a.max_new < 10 or a.pilot_rhs < 2:
         raise ValueError('Invalid concurrency / subspace / pilot settings')
-    if not (0 < a.tol_main <= 1e-4 and 0 < a.tol_small <= 1e-3 and a.budget_gpu_hours > 0 and a.solve_hours > 0):
+    if not (0 < a.tol_main <= 1e-4 and 0 < a.tol_small <= 1e-3
+            and math.isfinite(a.budget_gpu_hours) and a.budget_gpu_hours > 0
+            and math.isfinite(a.solve_hours) and a.solve_hours > 0):
         raise ValueError('Invalid tolerances or budget')
     c = rt.prepare_base(a, SCHEMA)
     v6 = Path(a.v6_out).resolve()
@@ -92,6 +94,8 @@ def prepare(a):
         raise ValueError('Primary gamma must be in the v6 Stage-1 grid')
     if list(cfg['score_seeds']) != list(cfg['seeds']):
         raise ValueError('Expected v6 scores for every Stage-1 seed')
+    if a.pilot_rhs > c['design']['m']:
+        raise ValueError('pilot-rhs exceeds the available subset count')
     c['input_sha256'].update(cfg['input_sha256'])
     c['input_sha256'].update(pins)
     rt.verify_hashes(c['input_sha256'])
@@ -105,14 +109,17 @@ def prepare(a):
              solve_hours=a.solve_hours, concurrency=a.concurrency, partition=a.partition, cpu_account=a.cpu_account,
              cpu_partition=a.cpu_partition, permutations=2000, bootstraps=2000,
              primary=('Mean over the 2298 nonmember rows x 4 classes of Spearman across the 32 subsets between the IF '
-                      'prediction J_p (H + gamma I)^{-1} b_j (gamma = primary_gamma, mean over the score panel) and the '
-                      'retrained change p_sub - p_full (mean over 8 seeds). One-sided joint-permutation p < 0.05; '
-                      'subset-bootstrap 95% CI; reported with the truth noise ceiling.'),
+                      'matched prediction J_p (H + gamma I)^{-1} [(N/K_j)b_j - (N/K_j-1)sum_i g_i] '
+                      '(gamma = primary_gamma) and p_sub - p_full, BOTH averaged over the frozen score panel. '
+                      'One-sided joint-permutation p < 0.05; subset-bootstrap 95% CI, conditional on fixed rows and '
+                      'model seeds. Split-half reproducibility is not a strict noise ceiling.'),
              coreported=('Same statistic on the 2045 training rows (all subsets; also retained-only and deleted-only); '
                          'row-group oracle of L3 = sum_r vbar . dp_hat (deleted / retained / nonmember rows replaced by the '
                          'retrained change) against the v6 six-attack-seed truth. Descriptive.'),
-             holdout_policy=('Subsets, seeds, gamma grid and primary gamma are inherited from v6 r1. The score panel is fixed '
-                             'in smoke from compute measurements only. No gamma, row group or class is chosen by outcome.'))
+             holdout_policy=('Reuses the v3 subsets and v6 models/grid; this is a mechanistic diagnostic, not new-subset '
+                             'confirmation. Primary gamma is set before this analysis (default .03); no post-result '
+                             'substitution. The score panel is fixed in smoke from compute measurements only. '
+                             'Historical v6 attack contraction is reproduction/descriptive, not attack-seed-crossfit inference.'))
     rt.save_config(c)
     print(f"v6 r1 run {v6}; Stage-1 seeds {c['seeds']}; subsets {c['design']['m']}; gammas {c['gammas']} "
           f"(primary {c['primary_gamma']:g}); budget {c['budget_gpu_hours']:g} GPU-h; partition {c['partition']}")
@@ -160,7 +167,10 @@ def submission_lock(fn):
 
 
 def hours(h):
-    return f'{int(h):02d}:{int(round((h % 1) * 60)):02d}:00'
+    if not math.isfinite(h) or h <= 0:
+        raise ValueError('Solve hours must be finite and positive')
+    hh, mm = divmod(math.ceil(h * 60), 60)
+    return f'{hh:02d}:{mm:02d}:00'
 
 
 @submission_lock

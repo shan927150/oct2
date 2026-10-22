@@ -86,6 +86,26 @@ class SolverTests(unittest.TestCase):
         self.assertTrue(out['converged'])
         self.assertEqual(out['new_vectors'], 1)
 
+    def test_zero_rhs_and_singular_auxiliary_shift(self):
+        import torch
+        H = torch.diag(torch.tensor([-.1, 1., 2.], dtype=torch.float64))
+        sg = subspace.SharedGalerkin(lambda v: H @ v, 3, 10)
+        zero = sg.solve(torch.zeros(3, dtype=torch.float64), [.3], [1e-12], 5)
+        self.assertTrue(zero['converged'])
+        self.assertEqual(zero['new_vectors'], 0)
+        # Use the coordinate basis to make the .1 projected system exactly singular.
+        for e in torch.eye(3, dtype=torch.float64):
+            sg._append(e)
+        b = torch.ones(3, dtype=torch.float64)
+        out = sg.solve(b, [.3, .1], [1e-12, 1e-12], 5)
+        torch.testing.assert_close(out['x'][.3], torch.linalg.solve(H + .3 * torch.eye(3), b))
+        self.assertLess(out['rel_residual'][.3], 1e-12)
+        self.assertEqual(out['rel_residual'][.1], 1.)
+        self.assertIn(.1, out['projection_failures'])
+        for gam, tol in (([], []), ([float('inf')], [1e-6]), ([.3, .3], [1e-6, 1e-6]), ([.3], [0.])):
+            with self.assertRaises(ValueError):
+                sg.solve(b, gam, tol, 5)
+
 
 class StatisticsTests(unittest.TestCase):
     def test_per_output_lds_equals_loop(self):
@@ -115,11 +135,71 @@ class StatisticsTests(unittest.TestCase):
         signal = rng.normal(size=(32, 30))
         Ts = signal[None] + .5 * rng.normal(size=(8, 32, 30))
         out = AI.split_half(Ts, np.arange(30))
-        self.assertGreater(out['spearman_brown'], out['half'])
-        self.assertLess(out['ceiling'], 1.)
+        self.assertEqual(out['splits'], 35)
+        self.assertFalse(out['is_strict_ceiling'])
+        self.assertGreater(out['spearman_brown_pearson_positive_only'], out['half_pearson'])
+        self.assertLess(out['attenuation_reference_pearson_positive_only'], 1.)
+        odd = AI.split_half(Ts[:3], np.arange(30))
+        self.assertEqual(odd['splits'], 3)
+        self.assertEqual(odd['extrapolation_factor'], 3.)
+        self.assertIsNone(AI.split_half(np.ones((8, 32, 2)), np.arange(2))['half'])
+        self.assertEqual(AI.split_half(Ts[:1], np.arange(30))['splits'], 0)
+
+    def test_constant_outputs_never_report_significance(self):
+        P = np.ones((8, 3))
+        for method in (AI.mean_lds_inference, AI.mean_lds_perm):
+            out = method(P, P, perms=100)
+            self.assertEqual(out['outputs'], 0)
+            self.assertIsNone(out['mean'])
+            self.assertIsNone(out['perm_p_one_sided'])
+            self.assertIsNone(out['ci'])
+        with self.assertRaises(ValueError):
+            AI.mean_lds_inference(P, P * np.nan)
+        with self.assertRaises(ValueError):
+            AI.mean_lds_inference(P, P[:7])
+
+    def test_bootstrap_freezes_output_support(self):
+        # One rare nonzero in each column: many resamples omit one of them. Never silently
+        # drop the corresponding output and average a changing, easier target.
+        P = np.eye(8)
+        out = AI.mean_lds_inference(P, P, perms=100, boots=200)
+        self.assertEqual(out['outputs'], 8)
+        self.assertLess(out['bootstrap_valid'], .95 * 200)
+        self.assertIsNone(out['ci'])
+
+    def test_permutation_ties_include_identity(self):
+        P = np.arange(3., dtype=float)[:, None]
+        out = AI.mean_lds_perm(P, P, perms=1000, seed=17)
+        rng = np.random.default_rng(17)
+        identity = sum(np.array_equal(rng.permutation(3), np.arange(3)) for _ in range(1000))
+        self.assertEqual(out['perm_p_one_sided'], (identity + 1) / 1001)
 
 
 class AlgebraTests(unittest.TestCase):
+    def test_proxy_prediction_uses_matched_objective(self):
+        rng = np.random.default_rng(61)
+        N, D, R, J = 6, 5, 9, 8
+        M = (rng.random((J, N)) < .5).astype(float)
+        M[:, 0], M[:, -1] = 1., 0.
+        G, Jz = rng.normal(size=(N, D)), rng.normal(size=(R, 4, D))
+        z = rng.normal(size=(R, 4))
+        p0 = np.exp(z) / np.exp(z).sum(1, keepdims=True)
+        dz = np.einsum('rcd,jd->jrc', Jz, (1 - M) @ G)
+        gall = Jz @ G.sum(0)
+        arrays = dict(p0=p0, gammas=np.array([.03]), dz_if=dz[:, None], dz_gall=gall[None],
+                      dz_proxy=dz, dz_proxy_gall=gall.copy(), dz_true=np.zeros_like(dz), vbar=np.zeros_like(p0))
+        data = dict(M=M, rows=dict(raw_index=np.arange(R)), frozen=dict(score_panel=[42]),
+                    solves={42: dict(arrays=arrays, result=dict(gammas=[dict(gamma=.03, qualified=True)]))})
+        pred, _, _ = AI.predictions(data, dict(gammas=[.03], primary_gamma=.03))
+        for j in range(J):
+            dtheta = -((N / M[j].sum()) * M[j] - 1) @ G
+            expected = np.stack([(np.diag(p) - np.outer(p, p)) @ Jz[r] @ dtheta for r, p in enumerate(p0)])
+            np.testing.assert_allclose(pred['proxy'][0, j], expected, atol=1e-12)
+        np.testing.assert_allclose(pred['proxy'].sum(-1), 0., atol=1e-12)
+        arrays['dz_proxy_gall'][0, 0] = np.nan
+        with self.assertRaisesRegex(ValueError, 'dz_proxy_gall'):
+            AI.predictions(data, dict(gammas=[.03], primary_gamma=.03))
+
     def test_matched_normalisation(self):
         """matched dz == J_z (A)^{-1} [ -sum_i ((N/K_j) M_ji - 1) g_i ] for a dense linear model."""
         rng = np.random.default_rng(6)
@@ -160,7 +240,10 @@ class PanelTests(unittest.TestCase):
         self.assertIsNone(core_if.choose_panel(seeds, 13., 240., 12.)[0])       # walltime
         h, hvps = core_if.projected_hours(20., 60, [10, 12, 8], 33, 24, 300., 4., 262)
         self.assertAlmostEqual(hvps, 60 + 33 * 10 + 24 + 12)
-        self.assertAlmostEqual(h, (hvps * 20 + 300 + 262 * 4) / 3600)
+        self.assertAlmostEqual(h, 1.25 * (hvps * 20 + 300 + 262 * 4) / 3600)
+        slow, _ = core_if.projected_hours(20., 60, [10, 12, 8], 33, 24, 300., 4., 262,
+                                         solver_seconds=[2000., 800., 1000., 900.])
+        self.assertGreater(slow, h)
 
 
 class PrepareTests(unittest.TestCase):
@@ -199,7 +282,7 @@ class PrepareTests(unittest.TestCase):
 
     def args(self, out, v6, **kw):
         a = dict(out=str(out), v6_out=str(v6), audit='/a', gammas='', primary_gamma=.03, tol_main=1e-6, tol_small=1e-4, max_dim=1400,
-                 max_new=200, pilot_rhs=4, budget_gpu_hours=24., solve_hours=12., partition='gpuA100x4',
+                 max_new=200, pilot_rhs=2, budget_gpu_hours=24., solve_hours=12., partition='gpuA100x4',
                  cpu_account='cpu-acct', cpu_partition='cpu', concurrency=8)
         a.update(kw)
         return SimpleNamespace(**a)
@@ -215,12 +298,14 @@ class PrepareTests(unittest.TestCase):
             with patch.object(rt, 'prepare_base', side_effect=base):
                 run.prepare(self.args(tmp / 'out', v6))
                 c = rt.read(tmp / 'out/config.json')
-                self.assertEqual(c['schema'], 'OCT_interface_lds_v1')
+                self.assertEqual(c['schema'], 'OCT_interface_lds_v1r1')
                 self.assertEqual(c['v6_config_sha256'], rt.sha(v6 / 'config.json'))
                 for rel in ('base/seed43/v.npz', 'score/seed42/scores.npz', 'truth/truth_s001_seed43/result.json', 'smoke/frozen.json'):
                     self.assertIn(str(v6 / rel), c['input_sha256'])
                 self.assertNotIn(str(v6 / 'base/seed42/h.npz'), c['input_sha256'])
                 self.assertEqual(c['attack_seeds'], [5101, 5104])
+                with self.assertRaisesRegex(ValueError, 'pilot-rhs'):
+                    run.prepare(self.args(tmp / 'bad_pilot', v6, pilot_rhs=3))
                 with self.assertRaisesRegex(ValueError, 'Primary gamma'):
                     run.prepare(self.args(tmp / 'out2', v6, primary_gamma=.05))
                 with self.assertRaisesRegex(ValueError, 'Primary gamma'):
@@ -253,6 +338,14 @@ class PrepareTests(unittest.TestCase):
 
 
 class RepoAndSubmitTests(unittest.TestCase):
+    def test_slurm_hours_rounds_without_minute_60(self):
+        run = own_run('run_time_if')
+        self.assertEqual(run.hours(1.999), '02:00:00')
+        self.assertEqual(run.hours(.001), '00:01:00')
+        for hours in (0., -1., float('inf'), float('nan')):
+            with self.assertRaises(ValueError):
+                run.hours(hours)
+
     def test_check_repo_rules(self):
         ours = 'A\texperiments/pathway2_interface_lds_v1/core_if.py'
         for row, diffs, ok in ((ours, ('', '', ''), True),

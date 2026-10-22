@@ -8,12 +8,14 @@ held-out images,
 and its first-order effect on the four class probabilities of every shadow-3 interface row,
     dp_hat_{s,j,r} = J_{p,r} dtheta_hat_{s,j}.
 The logit tangent J_{z,r} dtheta_hat is stored; J_p = (diag p - p p^T) J_z is applied at collect time.
-This is the Stage-1 factor of L3: L3_j = sum_r vbar_r . dp_hat_{j,r}, with vbar the attack adjoint of v6 r1.
+These are deleted-sum building blocks. Before comparing with retraining or reproducing L3, collect uses
+    dtheta_matched = (N/K_j) dtheta_hat - (N/K_j-1) (H + gamma I)^{-1} sum_i g_i.
+Then L3_j = sum_r vbar_r . dp_matched_{j,r}, with vbar the attack adjoint of v6 r1.
 The truth is the retrained change p_sub - p_full of the same rows (v3 run). No attack is trained here.
 
 H, g, the gamma grid and the models are those of L3 in v6 r1. Also stored per seed: the proxy J b_j (no
 Hessian), the true parameter change linearised J (theta_j - theta_full), and J (H + gamma I)^{-1} sum_i g_i for
-the matched normalisation. All 33 right-hand sides of a seed share one Galerkin subspace (subspace.py).
+the matched normalisation. All 34 right-hand sides (32 deletions, g_all and hbar) share one subspace.
 
 Gates that tie this run to v6 r1 (same models, same H): vbar built from v6's adjoints reproduces v6's hbar;
 the IF scores of hbar solved here reproduce v6's tau; hbar . x_j = b_j . x_hbar (symmetry); and
@@ -36,10 +38,18 @@ def softmax_jvp(p0, dz):
     return p0 * (dz - (p0 * dz).sum(-1, keepdims=True))
 
 
-def projected_hours(t_hvp, n_first, n_rhs_pilot, n_rhs, probe_steps, t_grad, t_jvp, n_jvp):
-    """Conservative per-seed hours: the first right-hand side, then every other at the pilot mean."""
+def projected_hours(t_hvp, n_first, n_rhs_pilot, n_rhs, probe_steps, t_grad, t_jvp, n_jvp,
+                    solver_seconds=None):
+    """Planning estimate, including measured projection/orthogonalisation costs and 25% headroom.
+
+    Later large-basis dense solves may cost more than this pilot predicts; this is not a runtime bound.
+    """
     hvps = n_first + n_rhs * float(np.mean(n_rhs_pilot)) + probe_steps + 12
-    return (hvps * t_hvp + t_grad + n_jvp * t_jvp) / 3600., hvps
+    solve_time = hvps * t_hvp
+    if solver_seconds is not None:
+        solve_time = max(solve_time, solver_seconds[0] + n_rhs * max(solver_seconds[1:])
+                         + (probe_steps + 12) * t_hvp)
+    return 1.25 * (solve_time + t_grad + n_jvp * t_jvp) / 3600., hvps
 
 
 def choose_panel(seeds, per_seed_hours, budget, walltime_hours):
@@ -48,7 +58,7 @@ def choose_panel(seeds, per_seed_hours, budget, walltime_hours):
         return None, f'projected {per_seed_hours:.1f} h per seed exceeds the solve walltime {walltime_hours:g} h'
     if len(seeds) * per_seed_hours <= budget:
         return list(seeds), f'all {len(seeds)} seeds fit the budget ({len(seeds) * per_seed_hours:.1f} <= {budget:g} GPU-h)'
-    if 3 * per_seed_hours <= budget:
+    if len(seeds) > 3 and 3 * per_seed_hours <= budget:
         return list(seeds[:3]), f'only the first three seeds fit the budget ({3 * per_seed_hours:.1f} <= {budget:g} GPU-h)'
     return None, f'even three seeds exceed the budget ({3 * per_seed_hours:.1f} > {budget:g} GPU-h)'
 
@@ -178,13 +188,15 @@ class ISession(XSession):
         return out
 
     def explicit_residual(self, hvp, x, b, g):
-        return float((hvp(x) + g * x - b).norm() / b.norm())
+        r, bn = float((hvp(x) + g * x - b).norm()), float(b.norm())
+        return r / bn if bn else r
 
     # ------------------------------------------------------------------ smoke
     def if_smoke(self, dest):
         """Designs, row identity, v3 replay, the v6 ties, a solver pilot on the first seed and the panel rule."""
         import torch
         dest = Path(dest)
+        started = time.monotonic()
         c, checks, timing = self.c, {}, {}
         if rt.read(dest / 'designs.json') != rt.read(Path(c['v3_out']) / 'designs.json'):
             raise ValueError('Regenerated designs differ from the v3 run designs.json')
@@ -195,7 +207,9 @@ class ISession(XSession):
             str(s): require_replay_close(f'Full-model interface vs v3, seed {s}', self.predict(self.model(self.full_name(s), s))[0],
                                          self.v3_probs(self.full_name(s)), c['v3_prediction_tol']) for s in c['seeds']}
         s0 = c['seeds'][0]
+        setup_start = time.monotonic()
         S = self.seed_setup(s0)
+        timing['setup_seconds'] = time.monotonic() - setup_start
         checks['vbar_reproduces_v6_hbar_rel'] = S['hbar_rel']
         timing['per_image_gradients_seconds'] = S['t_grad']
         mv, hvp, times = self.timed_hvp(S['model'])
@@ -203,13 +217,15 @@ class ISession(XSession):
         gam, tols = c['gammas'], self.tols()
         pilot, x, stored = [], {}, {}
         for name, b in [('hbar', S['hbar'])] + [(f'b{j}', S['B'][j]) for j in range(c['pilot_rhs'])]:
+            solve_start = time.monotonic()
             out = sg.solve(b, gam, tols, c['max_new'])
             pilot.append(dict(rhs=name, new_vectors=out['new_vectors'], dim=out['dim'], converged=out['converged'],
-                              max_rel_residual=max(out['rel_residual'].values())))
+                              max_rel_residual=max(out['rel_residual'].values()), seconds=time.monotonic() - solve_start))
             x[name], stored[name] = out['x'], out['rel_residual']
         checks['pilot'] = pilot
         checks['tau_vs_v6'] = self.tau_check(S, x['hbar'])
-        bad = {g: v for g, v in checks['tau_vs_v6'].items() if 'rel_l2' in v and not v['rel_l2'] <= self.tau_tol(float(g))}
+        bad = {g: v for g, v in checks['tau_vs_v6'].items()
+               if float(g) == c['primary_gamma'] and 'rel_l2' in v and not v['rel_l2'] <= self.tau_tol(float(g))}
         if bad:
             raise ValueError(f'IF scores of hbar do not reproduce v6 tau: {bad}')
         b0 = S['B'][0]
@@ -234,11 +250,15 @@ class ISession(XSession):
         timing['hvp_seconds_median'] = float(np.median(times))
         n_rhs = c['design']['m'] + 1
         hours, hvps = projected_hours(timing['hvp_seconds_median'], pilot[0]['new_vectors'], [p['new_vectors'] for p in pilot[1:]],
-                                      n_rhs, c['probe_steps'], timing['per_image_gradients_seconds'],
-                                      timing['logit_jvp_seconds'], n_rhs * len(gam) + 2 * c['design']['m'])
-        panel, why = choose_panel(c['seeds'], hours, c['budget_gpu_hours'], c['solve_hours'])
+                                      n_rhs, c['probe_steps'], timing['setup_seconds'],
+                                      timing['logit_jvp_seconds'], n_rhs * len(gam) + 2 * c['design']['m'] + 1,
+                                      solver_seconds=[p['seconds'] for p in pilot])
+        timing['smoke_elapsed_seconds'] = time.monotonic() - started
+        remaining = c['budget_gpu_hours'] - timing['smoke_elapsed_seconds'] / 3600.
+        panel, why = choose_panel(c['seeds'], hours, remaining, c['solve_hours'])
         frozen = dict(score_panel=panel, panel_rule=why, projected_hours_per_seed=hours, projected_hvps_per_seed=hvps,
                       primary_gamma=g0, gammas=gam, tolerances=dict(zip([f'{g:g}' for g in gam], tols)),
+                      remaining_solve_budget_gpu_hours=remaining, runtime_is_estimate=True,
                       rule='Panel fixed from compute measurements only, before any interface prediction is compared with truth.')
         rt.write(dest / 'result.json', _clean(dict(checks=checks, timing=timing, solver=dict(dim=sg.m, matvecs=sg.matvecs,
                                                                                           ritz_min=sg.ritz_min()))))
@@ -295,6 +315,7 @@ class ISession(XSession):
         stats.append(dict(rhs='g_all', new_vectors=out_a['new_vectors'], converged=out_a['converged']))
         dz_gall = np.stack([self.logit_jvp(model, out_a['x'][g]) for g in gam])
         dz_proxy = np.stack([self.logit_jvp(model, B[j]) for j in range(m)])
+        dz_proxy_gall = self.logit_jvp(model, gall)
         theta = self.flat_params(model)
         dz_true = np.stack([self.logit_jvp(model, self.flat_params(self.model(self.subset_name(j, seed), seed)) - theta)
                             for j in range(m)])
@@ -315,9 +336,24 @@ class ISession(XSession):
             if 'rel_l2' in t and not t['rel_l2'] <= self.tau_tol(g):
                 q['qualified'] = False
                 q['reasons'].append('IF scores of hbar do not reproduce v6 tau')
-            q.update(max_symmetry_rel=float(sym[:, gi].max()), tolerance_met_all_rhs=bool((rel[:, gi] <= tols[gi]).all()))
+            tolerance_met = bool((rel[:, gi] <= tols[gi]).all())
+            if not tolerance_met:
+                q['qualified'] = False
+                q['reasons'].append('requested residual tolerance not met for every right-hand side')
+            # This also checks the g_all correction and the forward contraction on every subset.
+            scale = (self.N / self.M.sum(1))[:, None, None]
+            matched = scale * dz_if[:, gi] - (scale - 1) * dz_gall[gi]
+            ours = (S['vbar'][None] * softmax_jvp(S['p0'], matched)).sum((1, 2))
+            ref = S['arrays6'].get(f'full_pred_gamma{g:g}') if S['qual6'].get(float(g)) else None
+            l3_error = None if ref is None else float(np.max(np.abs(ours - ref)) / max(np.max(np.abs(ref)), 1e-12))
+            if l3_error is not None and not l3_error <= self.tau_tol(g):
+                q['qualified'] = False
+                q['reasons'].append('forward matched probabilities do not reproduce v6 L3')
+            q.update(max_symmetry_rel=float(sym[:, gi].max()), tolerance_met_all_rhs=tolerance_met,
+                     v6_L3_relative_error=l3_error)
             gates.append(q)
-        np.savez_compressed(tmp / 'interface.npz', p0=S['p0'], dz_if=dz_if, dz_gall=dz_gall, dz_proxy=dz_proxy, dz_true=dz_true,
+        np.savez_compressed(tmp / 'interface.npz', p0=S['p0'], dz_if=dz_if, dz_gall=dz_gall, dz_proxy=dz_proxy,
+                            dz_proxy_gall=dz_proxy_gall, dz_true=dz_true,
                             vbar=S['vbar'], tau_hbar=np.stack([-(G @ out_h['x'][g]).cpu().numpy() for g in gam]),
                             rel_residual=rel, gammas=np.asarray(gam))
         rt.write(tmp / 'result.json', _clean(dict(

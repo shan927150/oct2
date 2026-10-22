@@ -216,6 +216,7 @@ class GpuPathOnCpu(unittest.TestCase):
                 run.collect(SimpleNamespace(out=str(root), allow_partial=False))
             summ = rt.read(root / 'report/summary.json')
             self.assertIn('mean', summ['primary'])
+            self.assertEqual(summ['design']['primary_truth_panel'], seeds)
             self.assertLess(summ['bridge']['L1_reproduces_v6_max_abs'], 1e-9)
             self.assertTrue(all(v < 1e-6 for v in summ['bridge']['v6_reproduction'].values()), summ['bridge']['v6_reproduction'])
             for name in ('IF (gamma=0.3)', 'IF (gamma=1)', 'proxy', 'true dtheta (linear)', 'IF logit (gamma=0.3)'):
@@ -225,6 +226,28 @@ class GpuPathOnCpu(unittest.TestCase):
             for sec in ('预设主检验', '逐输出 LDS', '行组平均的概率变化', '自身删除效应', '回到 attack', '读法'):
                 self.assertIn(sec, text)
             self.assertEqual(len(list(tmp.glob('exp.report.tar.gz'))), 1)
+            print('CPU_BRIDGE_ERRORS', dict(hbar=res['checks']['vbar_reproduces_v6_hbar_rel'],
+                  tau=max(v['rel_l2'] for v in res['checks']['tau_vs_v6'].values()),
+                  forward_reverse=r['forward_reverse_identity_max_rel'],
+                  L1=summ['bridge']['L1_reproduces_v6_max_abs'],
+                  L3=max(summ['bridge']['v6_reproduction'].values())), flush=True)
+            # A compute-limited panel must use the same Stage-1 seeds in primary truth.
+            # This exercises collect-only fallbacks, with no additional training or HVPs.
+            import analysis_if as AI
+            data = AI.load(root, c)
+            data['frozen']['score_panel'] = seeds[:1]
+            data['solves'] = {seeds[0]: data['solves'][seeds[0]]}
+            panel_summary, _ = AI.analyze(data, c)
+            preds, _, _ = AI.predictions(data, c)
+            rr = np.arange(len(ctx['train']), R)
+            expected = AI.finite_mean(AI.per_output_lds(AI.flat(preds['IF (gamma=0.3)'][0], rr),
+                                                       AI.flat(data['truth'][0], rr)))
+            self.assertAlmostEqual(panel_summary['primary']['mean'], expected, places=12)
+            self.assertIn('secondary_all_seed_truth', panel_summary)
+            self.assertEqual(panel_summary['bridge']['oracle_truth_stage1_panel'], seeds[:1])
+            self.assertTrue(all(e['perm_p'] is None for e in panel_summary['bridge']['rungs'].values()))
+            report = own('report_if')
+            report.render(run.clean(panel_summary), c, False)
 
 
 if __name__ == '__main__':
