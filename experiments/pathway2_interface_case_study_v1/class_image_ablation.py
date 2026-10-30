@@ -1,302 +1,234 @@
-"""Direct ablations on the finished interface run; CPU only, nothing is trained.
+"""Retrain Stage-2 attacks after removing selected shadow-3 training-table rows.
 
-Question: which attack class, and which images, limit the bridge LDS? The bridge score of subset j is a sum over
-rows r of  vbar_r . dp_{j,r}.  Because it is a plain sum, any variant (one class, a set of images removed, a set
-of images replaced by the retrained change) is computed directly from the stored per-(subset, row) terms.
-
-E1  per attack class      the class's own sensitivity v_c (stored per class in v6's v.npz, mean over attack seeds,
-                          weighted by omega_c) gives the class score; it is set against the class truth (mean over
-                          Stage-1 panel seeds and attack seeds of J10 - J00 of that class). The combined target is the
-                          original one. Rows 1 to 5 of the bridge, plus the deleted part alone and the rest alone.
-                          The mixed pairs (class score, other truth) are in the csv only.
-E2  image sets            for sets of training images chosen WITHOUT the retrained values (lowest margin, margin
-                          below a threshold, largest |a_IF|, smallest gradient norm, a class) and for the oracle
-                          set (largest |a_true|, chosen with the truth: optimistic), against random sets of the same size:
-                            drop   the images' rows are left out of the score (rows 1, 2, 3), the truth is unchanged
-                            fix    only these images' deleted rows take the retrained change (row 1 -> fix)
-                            leave  every deleted row but these takes the retrained change (row 3 -> leave)
-Random sets: 300 draws, seed 20261030, same size, from the attack-active training images.
-Spearman over the 32 subsets (LDS). Every number is a same-subset diagnostic, not a new estimate.
-
-Keep this script outside the frozen experiment checkout (run.config requires that checkout to stay clean):
-    python class_image_ablation.py --repo ~/oct2-interface-lds-v1r1 --out <interface run dir> \
-        [--gamma 0.03] [--features <out>/case_study/gamma0.03_k100/features_merged.csv]
+One worker per (selection, Stage-1 seed); collect only after all workers finish.
+Uses the original fixed target queries, saved Stage-1 IF and retrained probabilities.
+Group 'none' removes nothing: it re-runs the original attacks on this hardware and is compared with the stored
+v6 truth (replay) and with the removal groups, so a change in LDS can be told apart from run-to-run drift.
 """
 import argparse
+import csv
+import json
+import os
 import sys
 from pathlib import Path
+
 import numpy as np
-import pandas as pd
-from scipy.stats import spearmanr
 
-sys.dont_write_bytecode = True       # a __pycache__ in the frozen checkout would make it "dirty"
-SIZES = (20, 50, 100, 200, 300)
-THRESHOLDS = (8, 10, 12)
-DRAWS = 300
-SEED = 20261030
+sys.dont_write_bytecode = True
+GROUPS = ('none', 'low_margin', 'low_margin_random', 'high_if', 'high_if_random')
+PANEL = (42, 43, 44)
+N_SELECTED = 50          # default size of every removed set; --n-selected changes it
+RANDOM_SEED = 20261030
 
 
-def rho(a, b):
-    a, b = np.asarray(a, float), np.asarray(b, float)
-    if np.ptp(a) == 0 or np.ptp(b) == 0:
-        return np.nan
-    return float(spearmanr(a, b)[0])
+def selections(images, n=N_SELECTED):
+    """Return positions in the affected shadow-3 block, with class-matched controls."""
+    active = [r for r in images if r['attack_row_active'].lower() == 'true']
+    low = sorted(active, key=lambda r: (float(r['margin']), int(r['train_position'])))[:n]
+    high = sorted(active, key=lambda r: (-abs(float(r['a_if'])), int(r['train_position'])))[:n]
+    rng = np.random.default_rng(RANDOM_SEED)
+
+    def matched(chosen):
+        result = []
+        for cls in sorted({int(r['cls']) for r in chosen}):
+            pool = [r for r in active if int(r['cls']) == cls]
+            n = sum(int(r['cls']) == cls for r in chosen)
+            result.extend(pool[i] for i in rng.choice(len(pool), size=n, replace=False))
+        return result
+
+    return dict(none=[], low_margin=low, low_margin_random=matched(low), high_if=high, high_if_random=matched(high))
 
 
-def own_effect(M, X):
-    """Mean change when the image is deleted minus mean change when it is retained. M [J, N], X [S, J, N, C] -> [S, N, C]."""
-    D = 1 - M
-    return (np.einsum('jn,sjnc->snc', D, X) / D.sum(0)[None, :, None]
-            - np.einsum('jn,sjnc->snc', M, X) / M.sum(0)[None, :, None])
+def kept_training_indices(fixed, selected, cls):
+    """Only the selected member rows of affected shadow 3 are removed."""
+    aff = np.flatnonzero(fixed['shadow_id'] == 3)
+    positions = np.array([int(r['train_position']) for r in selected], dtype=int)
+    raws = np.array([int(r['raw_index']) for r in selected], dtype=int)
+    if not np.array_equal(fixed['raw_index'][aff[positions]], raws):
+        raise ValueError('Selected image IDs do not match the affected shadow-3 rows')
+    if not np.array_equal(fixed['classes'][aff[positions]], np.array([int(r['cls']) for r in selected])):
+        raise ValueError('Selected image classes do not match the affected shadow-3 rows')
+    if np.any(fixed['membership'][aff[positions]] != 1):
+        raise ValueError('Selected rows must be shadow-3 member rows')
+    keep = np.ones(len(fixed['classes']), dtype=bool)
+    keep[aff[positions]] = False
+    return np.flatnonzero((fixed['classes'] == cls) & keep)
 
 
-def class_truth(v6_truth, panel, omega):
-    """{class: [J]} mean over panel seeds and attack seeds of J10 - J00 of that attack class."""
-    J = 1 + max(j for j, _ in v6_truth)
-    num = {c: np.zeros(J) for c in omega}
-    cnt = {c: np.zeros(J) for c in omega}
-    for (j, s), rows in v6_truth.items():
-        if s in panel:
-            for r in rows:
-                if r['cls'] in omega:
-                    num[r['cls']][j] += r['J10'] - r['J00']
-                    cnt[r['cls']][j] += 1
-    return {c: num[c] / cnt[c] for c in omega}
+def train_condition(A, pilot, hp, fixed, x, cls, seed, selected, device, gamma=None):
+    """Rebuild the attack from the filtered table; keep target query rows fixed."""
+    train_idx = kept_training_indices(fixed, selected, cls)
+    query = fixed['q_classes'] == cls
+    model = A.train(pilot, hp, x[train_idx], fixed['membership'][train_idx], seed)
+    metric = A.evaluate(pilot, model, fixed['q_x'][query], fixed['q_membership'][query])
+    v = None
+    if gamma is not None:
+        adj = A.adjoint(model, x[train_idx], fixed['membership'][train_idx],
+                        fixed['q_x'][query], fixed['q_membership'][query], [gamma], device)
+        entry = adj['per_gamma'][float(gamma)]
+        if not entry['solved'] or not np.isfinite(entry['solve_rel_residual']):
+            raise RuntimeError('Attack adjoint solve failed')
+        affected = fixed['shadow_id'][train_idx] == 3
+        block = np.flatnonzero(fixed['shadow_id'] == 3)
+        positions = np.searchsorted(block, train_idx[affected])
+        v = np.zeros((len(block), x.shape[1]), dtype=float)
+        v[positions] = entry['v'][affected]
+    return float(metric['cross_entropy']), v
 
 
-def attack_truth(v6_truth, panel, omega, n_attack_seeds):
-    """The combined truth of the bridge table (same expression as in the case study and logit diagnostics)."""
-    Ta, n = np.zeros(1 + max(j for j, _ in v6_truth)), np.zeros(1 + max(j for j, _ in v6_truth))
-    for (j, s), rows in v6_truth.items():
-        if s in panel:
-            Ta[j] += sum(omega[r['cls']] * (r['J10'] - r['J00']) for r in rows if r['cls'] in omega)
-            n[j] += n_attack_seeds
-    return Ta / n
+def load_interface(repo, out):
+    sys.path.insert(0, str(Path(repo).resolve() / 'experiments/pathway2_interface_lds_v1'))
+    import run
+    import analysis_if
+    c = run.config(str(out))
+    data = analysis_if.load(Path(c['out']), c)
+    return c, data, analysis_if
 
 
-def terms(vb, X):
-    """vbar . dp of every (subset, row), averaged over the Stage-1 panel. vb [S, R, 4], X [S, J, R, 4] -> [J, R]."""
-    return np.einsum('srk,sjrk->jr', vb, X) / len(vb)
+def image_rows(out):
+    path = Path(out) / 'case_study/gamma0.03_k100/images.csv'
+    with path.open(newline='') as f:
+        return list(csv.DictReader(f))
 
 
-class Bridge:
-    """pv, tv [J, R]: predicted and retrained terms; M [J, N] retained mask of the training rows."""
-
-    def __init__(self, pv, tv, M, y):
-        self.pv, self.tv = pv, tv
-        J, N = M.shape
-        R = pv.shape[1]
-        self.J, self.N, self.R, self.y = J, N, R, y
-        pad = np.zeros((J, R - N), bool)
-        self.deleted = np.c_[M == 0, pad]
-        self.retained = np.c_[M == 1, pad]
-        self.nonmember = np.tile(np.arange(R) >= N, (J, 1))
-
-    def score(self, true_mask=None, keep=None, rows=None):
-        """Sum over rows of the retrained term where true_mask, else the predicted term. keep [J, R] drops rows."""
-        x = self.pv if true_mask is None else np.where(true_mask, self.tv, self.pv)
-        if keep is not None:
-            x = x * keep
-        if rows is not None:
-            x = x[:, rows]
-        return x.sum(1)
-
-    def bridge_rows(self, rows=None):
-        t = lambda m: self.score(m, rows=rows)
-        return {'row 1 all IF': t(None), 'row 2 all retrained': t(np.ones_like(self.deleted)),
-                'row 3 deleted rows retrained': t(self.deleted), 'row 4 retained rows retrained': t(self.retained),
-                'row 5 nonmember rows retrained': t(self.nonmember),
-                'deleted part alone, IF': self.score(None, self.deleted, rows),
-                'deleted part alone, retrained': self.score(np.ones_like(self.deleted), self.deleted, rows),
-                'retained + nonmember part alone, IF': self.score(None, ~self.deleted, rows)}
-
-
-CLASS_NAMES = {1: 'DME', 2: 'DRUSEN'}
-
-
-def class_vbar(analysis_if, c, fr, seed):
-    """{class: [R, 4]} sensitivity of that attack class's loss to the Stage-1 probabilities, v6's adjoint averaged
-    over attack seeds, not yet weighted. Same file and layout checks as analysis_if.vbar_from_v6."""
-    d = analysis_if.v6_dir(c, f'base/seed{seed}', dict(kind='base6', seed=seed))
-    with np.load(d / 'v.npz') as z:
-        V = z['v']
-        if (list(z['attack_seeds']) != list(fr['attack_seeds']) or list(z['classes']) != c['classes']
-                or list(z['attack_gammas']) != c['attack_gammas'] or V.ndim != 5 or not np.isfinite(V).all()):
-            raise ValueError('v6 adjoint layout or values differ from the frozen panel')
-    gi = c['attack_gammas'].index(fr['attack_gamma_star'])
-    return {cls: V[:, ci, gi].mean(0) for ci, cls in enumerate(c['classes']) if cls in fr['qualified_classes']}
-
-
-def e1_classes(bridges, Ta, ta_cls):
-    """bridges {'combined': Bridge, 'DME': Bridge of DME's own v, 'DRUSEN': ...}. Every score against every truth."""
-    truths = {'combined': Ta, **{CLASS_NAMES[c]: t for c, t in ta_cls.items()}}
-    out = []
-    for sname, br in bridges.items():
-        for label, s in br.bridge_rows().items():
-            for tname, t in truths.items():
-                out.append(dict(score_of=sname, truth=tname, score=label, lds=rho(s, t)))
-    return pd.DataFrame(out)
-
-
-def image_sets(img, features=None):
-    """Sets of attack-active training images, ordered by criteria that do not use the retrained values,
-    plus the oracle order. img: DataFrame over the N training images."""
-    act = np.flatnonzero(img.active.values)
-    by = lambda v, asc: act[np.argsort(v[act] if asc else -v[act], kind='stable')]
-    sets = {}
-    orders = {'lowest margin': by(img.margin.values, True), 'largest |a_IF|': by(np.abs(img.a_if.values), False)}
-    if features is not None:
-        orders['smallest gradient norm'] = by(features, True)
-    orders['ORACLE largest |a_true|'] = by(np.abs(img.a_true.values), False)
-    for name, o in orders.items():
-        for n in SIZES:
-            sets[(name, n)] = o[:n]
-    for th in THRESHOLDS:
-        sets[(f'margin < {th}', int((img.margin.values[act] < th).sum()))] = act[img.margin.values[act] < th]
-    for name, c in (('class DME', 1), ('class DRUSEN', 2)):
-        sets[(name, int((img.cls.values[act] == c).sum()))] = act[img.cls.values[act] == c]
-    return {k: v for k, v in sets.items() if 0 < k[1] <= len(act)}, act      # sizes beyond the active set are skipped
+def worker(repo, out, dest, task, n=N_SELECTED):
+    c, data, ai = load_interface(repo, out)
+    import attack4 as A
+    from core_if import ISession
+    panel = data['frozen']['score_panel']
+    if list(panel) != list(PANEL):
+        raise ValueError(f'This run expects the existing panel {PANEL}; got {panel}')
+    group, seed = GROUPS[task // len(PANEL)], PANEL[task % len(PANEL)]
+    images = image_rows(out)
+    selected = selections(images, n)[group]
+    if len(selected) != (0 if group == 'none' else n):
+        raise ValueError('Not enough attack-active training images')
+    session = ISession(c)
+    with np.load(Path(c['v6_out']) / 'smoke/fixed_rows.npz') as z:
+        fixed = {k: z[k] for k in z.files}
+    if not np.array_equal(fixed['raw_index'][fixed['shadow_id'] == 3], data['rows']['raw_index']):
+        raise ValueError('Attack table and interface output rows are not aligned')
+    fr = data['fr6']
+    classes = fr['qualified_classes']
+    attack_seeds = fr['attack_seeds']
+    gamma_a = float(fr['attack_gamma_star'])
+    pfull = data['full'][seed]
+    N = data['M'].shape[1]
+    arrays = data['solves'][seed]['arrays']
+    gamma = float(c['primary_gamma'])
+    gi = list(c['gammas']).index(gamma)
+    dz = ai.matched_dz(arrays['dz_if'][:, gi], arrays['dz_gall'][gi], data['M'].sum(1), N)
+    pred = ai.softmax_jvp(arrays['p0'], dz)
+    J = len(data['M'])
+    score = np.zeros(J)
+    vbar = np.zeros_like(pfull, dtype=float)
+    truth = np.zeros(J)
+    rows = []
+    full_x = A.assemble(fixed, pfull)
+    for cls in classes:
+        omega = float(fr['omega'][str(cls)])
+        for k in attack_seeds:
+            j00, v = train_condition(A, session.pilot, session.hp, fixed, full_x, cls, k,
+                                     selected, session.dev, gamma_a)
+            score += omega * np.einsum('jrc,rc->j', pred, v) / len(attack_seeds)
+            vbar += omega * v / len(attack_seeds)
+            for j in range(J):
+                psub = pfull + data['truth'][c['seeds'].index(seed), j]
+                j10, _ = train_condition(A, session.pilot, session.hp, fixed, A.assemble(fixed, psub),
+                                         cls, k, selected, session.dev)
+                truth[j] += omega * (j10 - j00) / len(attack_seeds)
+                rows.append(dict(subset=j, cls=cls, attack_seed=k, J00=j00, J10=j10))
+            print(f'{group} seed={seed} class={cls} attack_seed={k} finished', flush=True)
+    d = Path(dest) / group
+    d.mkdir(parents=True, exist_ok=True)
+    if group == 'none':     # same attacks as v6 r1, rerun here: how far are they from the stored truth?
+        stored = data['v6_truth']
+        gap = dict(J10_minus_J00_max_abs=0.0, J00_max_abs=0.0, J10_max_abs=0.0)
+        for j in range(J):
+            old_by_key = {(r['cls'], r['attack_seed']): r for r in stored[(j, seed)]}
+            for new in (r for r in rows if r['subset'] == j):
+                old = old_by_key[(new['cls'], new['attack_seed'])]
+                gap['J00_max_abs'] = max(gap['J00_max_abs'], abs(new['J00'] - old['J00']))
+                gap['J10_max_abs'] = max(gap['J10_max_abs'], abs(new['J10'] - old['J10']))
+                gap['J10_minus_J00_max_abs'] = max(gap['J10_minus_J00_max_abs'],
+                    abs((new['J10'] - new['J00']) - (old['J10'] - old['J00'])))
+        original_v = data['vbar'][seed]
+        old_score = np.einsum('jrc,rc->j', pred, original_v)
+        gap['vbar_max_abs'] = float(np.max(np.abs(vbar - original_v)))
+        gap['vbar_relative_l2'] = float(np.linalg.norm(vbar - original_v) / max(np.linalg.norm(original_v), 1e-300))
+        gap['score_max_abs'] = float(np.max(np.abs(score - old_score)))
+        (d / f'seed{seed}_replay.json').write_text(json.dumps(gap))
+        print(f'replay of stored v6 truth, seed {seed}: max abs {gap}', flush=True)
+    fields = list(images[0])
+    with (d / f'seed{seed}_selected.csv').open('w', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=fields); w.writeheader(); w.writerows(selected)
+    with (d / f'seed{seed}_truth.csv').open('w', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=list(rows[0])); w.writeheader(); w.writerows(rows)
+    np.savez_compressed(d / f'seed{seed}.npz', score=score, truth=truth, group=group,
+                        n_removed=len(selected), stage1_seed=seed)
 
 
-def e2_images(br, Ta, sets, act, rng):
-    N, R = br.N, br.R
-
-    def variants(idx):
-        rowS = np.zeros(R, bool)
-        rowS[idx] = True
-        keep = ~rowS[None, :] & np.ones((br.J, 1), bool)
-        sel = br.deleted & rowS[None, :]
-        return {'drop, row 1': br.score(None, keep), 'drop, row 2': br.score(np.ones_like(br.deleted), keep),
-                'drop, row 3': br.score(br.deleted, keep), 'fix, row 1 + S deleted rows retrained': br.score(sel),
-                'leave, row 3 with S left at IF': br.score(br.deleted & ~rowS[None, :])}
-
-    base = {k: rho(v, Ta) for k, v in variants(np.array([], int)).items()}
-    out = []
-    draws = {}
-    for (name, n), idx in sets.items():
-        whole_class = name.startswith('class ')     # random sets mix DME and DRUSEN in other proportions: no like-for-like control
-        if not whole_class and n not in draws:
-            draws[n] = np.array([[rho(v, Ta) for v in variants(rng.choice(act, n, replace=False)).values()]
-                                 for _ in range(DRAWS)])
-        for vi, (vname, v) in enumerate(variants(idx).items()):
-            lds = rho(v, Ta)
-            r = None if whole_class else draws[n][:, vi]
-            out.append(dict(set=name, n=n, variant=vname, lds=lds,
-                            random_mean=np.nan if r is None else r.mean(),
-                            random_p05=np.nan if r is None else np.percentile(r, 5),
-                            random_p95=np.nan if r is None else np.percentile(r, 95),
-                            share_of_random_below=np.nan if r is None else float((r < lds).mean()),
-                            with_retrained_values_in_selection=name.startswith('ORACLE')))
-    return pd.DataFrame(out), base
-
-
-def own_terms(M, T, P, vb, p0, y):
-    """Per training image: margin, class, active flag, attack-weighted half-data contrast of the retrained and predicted change."""
-    N = M.shape[1]
-    et, ep = own_effect(M, T[:, :, :N]), own_effect(M, P[:, :, :N])
-    logp = np.log(p0[:N])
-    other = np.where(np.eye(4, dtype=bool)[y[:N]], -np.inf, logp).max(1)
-    return pd.DataFrame(dict(cls=y[:N], margin=logp[np.arange(N), y[:N]] - other,
-                             active=np.any(vb[:, :N] != 0, axis=(0, 2)),
-                             a_true=(vb[:, :N] * et).sum(-1).mean(0), a_if=(vb[:, :N] * ep).sum(-1).mean(0)))
-
-
-def checks(bridges, Ta, ta_cls, omega, vb, vbc, y):
-    """Identities and the reference values of the existing bridge table."""
-    br = bridges['combined']
-    s1, s3 = br.score(None), br.score(br.deleted)
-    parts = sum(b.score(None) for k, b in bridges.items() if k != 'combined')
-    cls_sum = sum(omega[c] * ta_cls[c] for c in omega)
-    out_rows = ~np.isin(y, list(omega))
-    chk = dict(row1_lds=rho(s1, Ta), row3_lds=rho(s3, Ta),
-               class_scores_sum_to_row1_max_abs=float(np.abs(parts - s1).max()),
-               class_truths_recombine_to_attack_truth_max_abs=float(np.abs(cls_sum - Ta).max()),
-               class_vbar_sum_vs_mixed_vbar_max_abs=float(np.abs(sum(vbc.values()) - vb).max()),
-               vbar_max_abs_on_rows_outside_attack_classes=float(np.abs(vb[:, out_rows]).max()) if out_rows.any() else 0.0)
-    for c, v in vbc.items():     # how much of class c's own sensitivity sits on rows of another image class
-        other = y != c
-        chk[f'vbar_{CLASS_NAMES[c]}_max_abs_on_rows_of_other_classes'] = float(np.abs(v[:, other]).max()) if other.any() else 0.0
-    return chk
-
-
-def align_grad_norm(f, raw_index, y, N):
-    """Gradient norm per training image, matched on train_position and verified against raw_index and class."""
-    need = {'train_position', 'raw_index', 'cls', 'grad_norm'}
-    if not need <= set(f.columns):
-        raise ValueError(f'features file lacks columns {sorted(need - set(f.columns))}')
-    pos = f.train_position.values
-    if len(f) != N or len(np.unique(pos)) != N or pos.min() != 0 or pos.max() != N - 1:
-        raise ValueError(f'features file does not hold exactly the {N} training images once each')
-    if not (np.array_equal(f.raw_index.values, raw_index[pos]) and np.array_equal(f.cls.values, y[pos])):
-        raise ValueError('features file rows differ from the interface run (raw_index or class)')
-    if not np.isfinite(f.grad_norm.values).all():
-        raise ValueError('features file has missing gradient norms')
-    g = np.zeros(N)
-    g[pos] = f.grad_norm.values
-    return g
+def collect(repo, out, dest, n=N_SELECTED):
+    from scipy.stats import spearmanr
+    c, data, ai = load_interface(repo, out)
+    fr = data['fr6']
+    J = len(data['M'])
+    base_score, base_truth = [], []
+    for seed in PANEL:
+        arr = data['solves'][seed]['arrays']
+        gi = list(c['gammas']).index(float(c['primary_gamma']))
+        dz = ai.matched_dz(arr['dz_if'][:, gi], arr['dz_gall'][gi], data['M'].sum(1), data['M'].shape[1])
+        dp = ai.softmax_jvp(arr['p0'], dz)
+        base_score.append(np.einsum('jrc,rc->j', dp, data['vbar'][seed]))
+        t = np.zeros(J)
+        for j in range(J):
+            for cls in fr['qualified_classes']:
+                vals = [r['J10'] - r['J00'] for r in data['v6_truth'][(j, seed)] if r['cls'] == cls]
+                t[j] += float(fr['omega'][str(cls)]) * np.mean(vals)
+        base_truth.append(t)
+    methods = [('stored baseline (v6 r1)', np.mean(base_score, axis=0), np.mean(base_truth, axis=0))]
+    for group in GROUPS:
+        parts = []
+        for seed in PANEL:
+            with np.load(Path(dest) / group / f'seed{seed}.npz') as z:
+                expected_n = 0 if group == 'none' else n
+                if str(z['group']) != group or int(z['stage1_seed']) != seed or int(z['n_removed']) != expected_n:
+                    raise ValueError(f'Mismatched output for {group}, seed {seed}, n={n}')
+                parts.append((z['score'], z['truth']))
+        methods.append((group, np.mean([x[0] for x in parts], axis=0), np.mean([x[1] for x in parts], axis=0)))
+    with (Path(dest) / 'results.csv').open('w', newline='') as f:
+        w = csv.writer(f); w.writerow(['group', 'removed_shadow3_member_rows', 'lds'])
+        for group, score, truth in methods:
+            value = float(spearmanr(score, truth).statistic)
+            w.writerow([group, n if group in ('low_margin', 'low_margin_random', 'high_if', 'high_if_random') else 0, value])
+            print(f'{group:26s} LDS={value:.6f}', flush=True)
+    for seed in PANEL:
+        gap = json.loads((Path(dest) / 'none' / f'seed{seed}_replay.json').read_text())
+        print(f'replay of the stored truth, Stage-1 seed {seed}: max abs {gap}', flush=True)
+    with (Path(dest) / 'subset_values.csv').open('w', newline='') as f:
+        w = csv.writer(f); w.writerow(['group', 'subset', 'predicted', 'truth'])
+        for group, score, truth in methods:
+            w.writerows((group, j, score[j], truth[j]) for j in range(J))
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument('--out', required=True, help='interface run directory')
-    ap.add_argument('--gamma', type=float, default=None)
-    ap.add_argument('--features', type=Path, default=None, help='features_merged.csv from case_features.py (optional)')
-    ap.add_argument('--repo', type=Path, default=Path.cwd(), help='unchanged interface v1r1 repository checkout')
-    ap.add_argument('--e1-only', action='store_true', help='per-class table only; skip the image sets')
-    a = ap.parse_args()
-    sys.path.insert(0, str(a.repo.resolve() / 'experiments/pathway2_interface_lds_v1'))
-    import analysis_if
-    import run
-    c = run.config(a.out)
-    data = analysis_if.load(Path(c['out']), c)
-    preds, qualified, panel = analysis_if.predictions(data, c)
-    g = c['primary_gamma'] if a.gamma is None else a.gamma
-    if not qualified.get(f'{g:g}', False):
-        raise ValueError(f'Gamma {g:g} is unavailable or did not pass the existing solve checks.')
-    P = preds[f'IF (gamma={g:g})']
-    T = data['truth'][[c['seeds'].index(s) for s in panel]]
-    vb = np.stack([data['vbar'][s] for s in panel])
-    p0 = np.stack([data['solves'][s]['arrays']['p0'] for s in panel]).mean(0)
-    M, y = data['M'], data['rows']['y']
-    fr = data['fr6']
-    omega = {int(k): v for k, v in fr['omega'].items()}
-    per_seed = [class_vbar(analysis_if, c, fr, s) for s in panel]
-    vbc = {k: omega[k] * np.stack([d[k] for d in per_seed]) for k in omega}      # weighted class sensitivities
-    ta_cls = class_truth(data['v6_truth'], panel, omega)
-    Ta = attack_truth(data['v6_truth'], panel, omega, len(fr['attack_seeds']))
-    mk = lambda v: Bridge(terms(v, P), terms(v, T), M, y)
-    bridges = {'combined': mk(vb), **{CLASS_NAMES[k]: mk(v) for k, v in vbc.items()}}
-    br = bridges['combined']
-    chk = checks(bridges, Ta, ta_cls, omega, vb, vbc, y)
-    e1 = e1_classes(bridges, Ta, ta_cls)
-    dest = Path(c['out']) / 'class_image_ablation' / f'gamma{g:g}'
-    dest.mkdir(parents=True, exist_ok=True)
-    e1.to_csv(dest / 'e1_class_lds.csv', index=False)
-    show = lambda df: print(df.to_string(index=False, float_format=lambda x: f'{x:.3f}'), '\n')
-    print(f'gamma = {g:g}, seed panel {panel}')
-    print('--- reference and identity values (row 1 and row 3 of the existing bridge table: 0.262 and 0.730; max_abs near 0)')
-    for k, v in chk.items():
-        print(f'{k:62s} {v:.6g}')
-    print('--- E1: each class score against its own truth, and the combined target')
-    diag = e1[(e1.score_of == e1.truth)]
-    show(diag.pivot_table(index=['score_of'], columns='score', values='lds', sort=False).reset_index())
-    extra = {}
-    if not a.e1_only:
-        img = own_terms(M, T, P, vb, p0, y)
-        feats = None
-        if a.features is not None:
-            feats = align_grad_norm(pd.read_csv(a.features), data['rows']['raw_index'], y, M.shape[1])
-        sets, act = image_sets(img, feats)
-        e2, base = e2_images(br, Ta, sets, act, np.random.default_rng(SEED))
-        e2.to_csv(dest / 'e2_image_sets.csv', index=False)
-        extra = {f'base {k}': v for k, v in base.items()} | dict(draws=DRAWS, seed=SEED, n_active=int(len(act)))
-        print(f'--- E2: {len(act)} attack-active training images; each set against 300 random sets of the same size '
-              f'(seed {SEED}); whole-class sets have no random control')
-        for variant, d in e2.groupby('variant', sort=False):
-            print(f'[{variant}]   no image removed or replaced: {base[variant]:.3f}')
-            show(d.drop(columns=['variant']))
-    pd.Series({**chk, **extra, 'gamma': g, 'panel': str(panel)}).to_csv(dest / 'checks.csv', header=['value'])
-    print('Saved:', dest)
+    p = argparse.ArgumentParser()
+    p.add_argument('--repo', required=True)
+    p.add_argument('--out', required=True)
+    p.add_argument('--dest', required=True)
+    p.add_argument('--task', type=int)
+    p.add_argument('--n-selected', type=int, default=N_SELECTED, help='rows removed per selection')
+    p.add_argument('--collect', action='store_true')
+    a = p.parse_args()
+    if a.n_selected < 1:
+        p.error('--n-selected must be positive')
+    Path(a.dest).mkdir(parents=True, exist_ok=True)
+    if a.collect:
+        collect(a.repo, a.out, a.dest, a.n_selected)
+    else:
+        if a.task is None or not 0 <= a.task < len(GROUPS) * len(PANEL):
+            p.error(f'task must be 0..{len(GROUPS) * len(PANEL) - 1}')
+        worker(a.repo, a.out, a.dest, a.task, a.n_selected)
 
 
 if __name__ == '__main__':
